@@ -4,6 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/msjurset/anonymark/pkg/anonymizer"
 	"github.com/msjurset/anonymark/pkg/renderer"
@@ -54,6 +56,16 @@ Flags for capture & process:
 `)
 }
 
+func expandPath(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
+}
+
 func runCapture(args []string) {
 	fs := flag.NewFlagSet("capture", flag.ExitOnError)
 	outPath := fs.String("out", "anonymized.png", "Output file path")
@@ -70,38 +82,67 @@ func runCapture(args []string) {
 
 	anon := anonymizer.NewAnonymizer()
 	mode := renderer.Mode(*modeStr)
+	resolvedOut := expandPath(*outPath)
 
-	err = anon.ProcessImageFile(tmpPath, *outPath, mode)
+	err = anon.ProcessImageFile(tmpPath, resolvedOut, mode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error anonymizing image: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("[anonymark] Anonymized screenshot saved to %s\n", *outPath)
+	fmt.Printf("[anonymark] Anonymized screenshot saved to %s\n", resolvedOut)
 }
 
 func runProcess(args []string) {
-	fs := flag.NewFlagSet("process", flag.ExitOnError)
-	outPath := fs.String("out", "anonymized.png", "Output file path")
-	modeStr := fs.String("mode", "synthetic", "Redaction mode (synthetic, blur, pill)")
-	_ = fs.Parse(args)
+	inputPath, outPath, mode := parseProcessArgs(args)
 
-	if fs.NArg() < 1 {
+	if inputPath == "" {
 		fmt.Fprintf(os.Stderr, "Usage: anonymark process <input-image.png> [-out output.png]\n")
 		os.Exit(1)
 	}
 
-	inputPath := fs.Arg(0)
 	anon := anonymizer.NewAnonymizer()
-	mode := renderer.Mode(*modeStr)
-
-	err := anon.ProcessImageFile(inputPath, *outPath, mode)
+	err := anon.ProcessImageFile(inputPath, outPath, mode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error anonymizing image: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("[anonymark] Anonymized image saved to %s\n", *outPath)
+	fmt.Printf("[anonymark] Anonymized image saved to %s\n", outPath)
+}
+
+func parseProcessArgs(args []string) (inputPath, outputPath string, mode renderer.Mode) {
+	outPath := "anonymized.png"
+	modeStr := "synthetic"
+	var positional []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-out" || arg == "--out" {
+			if i+1 < len(args) {
+				outPath = args[i+1]
+				i++
+			}
+		} else if strings.HasPrefix(arg, "-out=") || strings.HasPrefix(arg, "--out=") {
+			parts := strings.SplitN(arg, "=", 2)
+			outPath = parts[1]
+		} else if arg == "-mode" || arg == "--mode" {
+			if i+1 < len(args) {
+				modeStr = args[i+1]
+				i++
+			}
+		} else if strings.HasPrefix(arg, "-mode=") || strings.HasPrefix(arg, "--mode=") {
+			parts := strings.SplitN(arg, "=", 2)
+			modeStr = parts[1]
+		} else {
+			positional = append(positional, arg)
+		}
+	}
+
+	if len(positional) > 0 {
+		inputPath = expandPath(positional[0])
+	}
+	return inputPath, expandPath(outPath), renderer.Mode(modeStr)
 }
 
 func runCompletion(args []string) {

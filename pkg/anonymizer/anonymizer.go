@@ -24,32 +24,28 @@ func NewAnonymizer() *Anonymizer {
 
 // ProcessImageFile loads an input PNG/JPEG file, performs OCR, detects PII, applies redaction, and saves output.
 func (a *Anonymizer) ProcessImageFile(inputPath, outputPath string, mode renderer.Mode) error {
-	// Perform OCR text & bounding box recognition
 	observations, err := ocr.RecognizeText(inputPath)
 	if err != nil {
-		return fmt.Errorf("OCR detection failed: %w", err)
+		return fmt.Errorf("OCR failed: %w", err)
 	}
 
-	var items []renderer.RedactionItem
+	var targets []renderer.TargetItem
+	seen := make(map[string]bool)
 
 	for _, obs := range observations {
 		matches := a.Detector.DetectMatches(obs.Text)
-		if len(matches) > 0 {
-			items = append(items, renderer.RedactionItem{
-				X:           obs.X,
-				Y:           obs.Y,
-				W:           obs.W,
-				H:           obs.H,
-				Replacement: matches[0].Replacement,
-			})
+		for _, m := range matches {
+			key := fmt.Sprintf("%s:%s:%s", m.Original, m.Replacement, m.Type)
+			if !seen[key] {
+				seen[key] = true
+				targets = append(targets, renderer.TargetItem{
+					Original:    m.Original,
+					Replacement: m.Replacement,
+					Type:        string(m.Type),
+				})
+			}
 		}
 	}
 
-	fmt.Printf("[anonymark] Redacting %d sensitive PII text regions in screenshot...\n", len(items))
-
-	if err := a.Renderer.RenderNativeRedactions(inputPath, outputPath, items, mode); err != nil {
-		return fmt.Errorf("rendering failed: %w", err)
-	}
-
-	return nil
+	return a.Renderer.RenderNativeRedactions(inputPath, outputPath, targets, mode)
 }
