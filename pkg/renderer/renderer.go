@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"sort"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
@@ -175,7 +176,14 @@ func (r *AppKitRenderer) RenderNativeRedactions(inputPath, outputPath string, ta
 		return nil
 	}
 
-	jsonBytes, err := json.Marshal(targets)
+	// Sort targets by length descending to match longest PII strings first (e.g. 192.168.86.134 before 192.168.86.1)
+	sortedTargets := make([]TargetItem, len(targets))
+	copy(sortedTargets, targets)
+	sort.Slice(sortedTargets, func(i, j int) bool {
+		return len(sortedTargets[i].Original) > len(sortedTargets[j].Original)
+	})
+
+	jsonBytes, err := json.Marshal(sortedTargets)
 	if err != nil {
 		return fmt.Errorf("failed to marshal targets: %w", err)
 	}
@@ -326,6 +334,22 @@ let request = VNRecognizeTextRequest { request, error in
         for t in targets {
             var searchRange = text.startIndex..<text.endIndex
             while let range = text.range(of: t.original, options: [], range: searchRange) {
+                // Strict word-boundary guard to prevent partial substring matches (e.g. 192.168.86.1 inside 192.168.86.134)
+                if range.upperBound < text.endIndex {
+                    let nextChar = text[range.upperBound]
+                    if nextChar.isNumber || nextChar.isLetter {
+                        searchRange = range.upperBound..<text.endIndex
+                        continue
+                    }
+                }
+                if range.lowerBound > text.startIndex {
+                    let prevChar = text[text.index(before: range.lowerBound)]
+                    if prevChar.isNumber || prevChar.isLetter {
+                        searchRange = range.upperBound..<text.endIndex
+                        continue
+                    }
+                }
+
                 defer { searchRange = range.upperBound..<text.endIndex }
                 guard let box = try? topCandidate.boundingBox(for: range) else { continue }
 
@@ -348,7 +372,8 @@ let request = VNRecognizeTextRequest { request, error in
     rawMatches.sort { $0.rect.minY > $1.rect.minY }
 
     var matchRegions: [MatchRegion] = []
-    var detailTitleFound = false
+    var detailHeaderFound = false
+    var detailSubtitleFound = false
 
     for m in rawMatches {
         let r = m.rect
@@ -359,11 +384,14 @@ let request = VNRecognizeTextRequest { request, error in
         var category: LayoutCategory = .listPrimary
 
         if xRatio > 0.45 && yRatio > 0.65 {
-            if !detailTitleFound {
+            if !detailHeaderFound {
                 category = .headerTitle
-                detailTitleFound = true
-            } else {
+                detailHeaderFound = true
+            } else if !detailSubtitleFound {
                 category = .headerSubtitle
+                detailSubtitleFound = true
+            } else {
+                category = .detailLabel
             }
         } else if t.type == "ipv4" {
             category = .listSecondary
@@ -381,10 +409,10 @@ let request = VNRecognizeTextRequest { request, error in
     let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
     NSGraphicsContext.current = nsContext
 
-    // PASS 1: Cleanly erase original target bounding boxes using exact background color
+    // PASS 1: Cleanly erase original target bounding boxes with +4px padding
     for region in matchRegions {
         region.bgColor.setFill()
-        let eraseRect = CGRect(x: region.rect.minX - 1, y: region.rect.minY - 1, width: region.rect.width + 2, height: region.rect.height + 2)
+        let eraseRect = CGRect(x: region.rect.minX - 2, y: region.rect.minY - 2, width: region.rect.width + 4, height: region.rect.height + 4)
         NSBezierPath.fill(eraseRect)
 
         if mode == "blur" {
@@ -396,7 +424,7 @@ let request = VNRecognizeTextRequest { request, error in
         }
     }
 
-    // PASS 2: Render synthetic replacement text using UNIFORM TYPOGRAPHY
+    // PASS 2: Render synthetic replacement text using EXACT SYSTEM TYPOGRAPHY
     if mode == "synthetic" {
         for region in matchRegions {
             let r = region.rect
@@ -439,16 +467,6 @@ let request = VNRecognizeTextRequest { request, error in
             ]
             var attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
             var strSize = attrStr.size()
-
-            if region.category != .headerTitle {
-                while strSize.width > r.width + 35.0 && fontSize > 9.0 {
-                    fontSize -= 0.5
-                    font = NSFont.systemFont(ofSize: fontSize, weight: fontWeight)
-                    attributes[.font] = font
-                    attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
-                    strSize = attrStr.size()
-                }
-            }
 
             let textY = r.minY + (r.height - strSize.height) / 2.0
             let drawPoint = CGPoint(x: r.minX, y: textY)
