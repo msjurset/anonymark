@@ -71,7 +71,7 @@ func runCapture(args []string) {
 	anon := anonymizer.NewAnonymizer()
 	mode := renderer.Mode(*modeStr)
 
-	err = anon.ProcessImageFile(tmpPath, *outPath, mode, nil)
+	err = anon.ProcessImageFile(tmpPath, *outPath, mode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error anonymizing image: %v\n", err)
 		os.Exit(1)
@@ -95,7 +95,7 @@ func runProcess(args []string) {
 	anon := anonymizer.NewAnonymizer()
 	mode := renderer.Mode(*modeStr)
 
-	err := anon.ProcessImageFile(inputPath, *outPath, mode, nil)
+	err := anon.ProcessImageFile(inputPath, *outPath, mode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error anonymizing image: %v\n", err)
 		os.Exit(1)

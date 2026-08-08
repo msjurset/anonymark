@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/msjurset/anonymark/pkg/detector"
+	"github.com/msjurset/anonymark/pkg/ocr"
 	"github.com/msjurset/anonymark/pkg/renderer"
 )
 
@@ -25,8 +26,8 @@ func NewAnonymizer() *Anonymizer {
 	}
 }
 
-// ProcessImageFile loads an input PNG/JPEG file, applies redaction, and saves to output path.
-func (a *Anonymizer) ProcessImageFile(inputPath, outputPath string, mode renderer.Mode, regions []image.Rectangle) error {
+// ProcessImageFile loads an input PNG/JPEG file, performs OCR, detects PII, applies redaction, and saves output.
+func (a *Anonymizer) ProcessImageFile(inputPath, outputPath string, mode renderer.Mode) error {
 	inFile, err := os.Open(inputPath)
 	if err != nil {
 		return fmt.Errorf("failed to open input image: %w", err)
@@ -43,10 +44,23 @@ func (a *Anonymizer) ProcessImageFile(inputPath, outputPath string, mode rendere
 	dstImg := image.NewRGBA(bounds)
 	draw.Draw(dstImg, bounds, srcImg, bounds.Min, draw.Src)
 
-	// Apply redaction to each specified region
-	for _, rect := range regions {
-		a.Renderer.RedactRegion(dstImg, rect, "10.0.4.12", mode)
+	// Perform OCR text & bounding box recognition
+	observations, err := ocr.RecognizeText(inputPath)
+	if err != nil {
+		return fmt.Errorf("OCR detection failed: %w", err)
 	}
+
+	count := 0
+	for _, obs := range observations {
+		matches := a.Detector.DetectMatches(obs.Text)
+		if len(matches) > 0 {
+			m := matches[0]
+			a.Renderer.RedactRegion(dstImg, obs.Rect, m.Replacement, mode)
+			count++
+		}
+	}
+
+	fmt.Printf("[anonymark] Redacted %d sensitive PII text regions in screenshot\n", count)
 
 	outFile, err := os.Create(outputPath)
 	if err != nil {
