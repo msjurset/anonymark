@@ -226,7 +226,7 @@ guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
 
 context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-func samplePixelColor(context: CGContext, x: Int, y: Int) -> NSColor {
+func samplePixelColor(context: CGContext, x: Int, y: Int, width: Int, height: Int) -> NSColor {
     guard let dataPtr = context.data else { return NSColor.black }
     let pointer = dataPtr.bindMemory(to: UInt8.self, capacity: width * height * 4)
     let safeX = max(0, min(width - 1, x))
@@ -239,17 +239,59 @@ func samplePixelColor(context: CGContext, x: Int, y: Int) -> NSColor {
     return NSColor(srgbRed: r, green: g, blue: b, alpha: a)
 }
 
+func sampleBackgroundColor(context: CGContext, rect: CGRect, width: Int, height: Int) -> NSColor {
+    let margin: CGFloat = 3.0
+    let points: [CGPoint] = [
+        CGPoint(x: rect.minX - margin, y: rect.midY),
+        CGPoint(x: rect.maxX + margin, y: rect.midY),
+        CGPoint(x: rect.midX, y: rect.minY - margin),
+        CGPoint(x: rect.midX, y: rect.maxY + margin),
+        CGPoint(x: rect.minX - margin, y: rect.minY - margin),
+        CGPoint(x: rect.maxX + margin, y: rect.minY - margin),
+        CGPoint(x: rect.minX - margin, y: rect.maxY + margin),
+        CGPoint(x: rect.maxX + margin, y: rect.maxY + margin)
+    ]
+    
+    var rSum: CGFloat = 0, gSum: CGFloat = 0, bSum: CGFloat = 0, aSum: CGFloat = 0
+    var count: CGFloat = 0
+    
+    for pt in points {
+        let x = max(0, min(width - 1, Int(pt.x)))
+        let y = max(0, min(height - 1, Int(pt.y)))
+        let c = samplePixelColor(context: context, x: x, y: y, width: width, height: height)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        c.getRed(&r, green: &g, blue: &b, alpha: &a)
+        rSum += r
+        gSum += g
+        bSum += b
+        aSum += a
+        count += 1
+    }
+    
+    return NSColor(srgbRed: rSum / count, green: gSum / count, blue: bSum / count, alpha: aSum / count)
+}
+
+struct MatchRegion {
+    let original: String
+    let replacement: String
+    let type: String
+    let rect: CGRect
+    let bgColor: NSColor
+}
+
 let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
 let request = VNRecognizeTextRequest { request, error in
     guard let observations = request.results as? [VNRecognizedTextObservation] else { return }
 
-    NSGraphicsContext.saveGraphicsState()
-    let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
-    NSGraphicsContext.current = nsContext
+    var matchRegions: [MatchRegion] = []
+    var matchedRects: [CGRect] = []
 
     for obs in observations {
         guard let topCandidate = obs.topCandidates(1).first else { continue }
         let text = topCandidate.string
+
+        let lineY = obs.boundingBox.origin.y * CGFloat(height)
+        let lineH = obs.boundingBox.height * CGFloat(height)
 
         for t in targets {
             var searchRange = text.startIndex..<text.endIndex
@@ -257,59 +299,89 @@ let request = VNRecognizeTextRequest { request, error in
                 defer { searchRange = range.upperBound..<text.endIndex }
                 guard let box = try? topCandidate.boundingBox(for: range) else { continue }
 
-                let r = CGRect(x: box.boundingBox.origin.x * CGFloat(width),
-                               y: box.boundingBox.origin.y * CGFloat(height),
-                               width: box.boundingBox.width * CGFloat(width),
-                               height: box.boundingBox.height * CGFloat(height))
+                let x = box.boundingBox.origin.x * CGFloat(width)
+                let w = box.boundingBox.width * CGFloat(width)
+                let r = CGRect(x: x, y: lineY, width: w, height: lineH)
 
-                let bgLeft = samplePixelColor(context: context, x: Int(r.minX) - 3, y: Int(r.midY))
-                let fgCenter = samplePixelColor(context: context, x: Int(r.midX), y: Int(r.midY))
-
-                bgLeft.setFill()
-                let eraseRect = CGRect(x: r.minX - 2, y: r.minY - 2, width: r.width + 4, height: r.height + 4)
-                NSBezierPath.fill(eraseRect)
-
-                if mode == "blur" {
-                    NSColor.gray.withAlphaComponent(0.8).setFill()
-                    NSBezierPath.fill(r)
-                    continue
-                } else if mode == "pill" {
-                    NSColor.darkGray.setFill()
-                    NSBezierPath.fill(r)
-                    continue
+                let isDuplicate = matchedRects.contains { existing in
+                    let dx = abs(existing.midX - r.midX)
+                    let dy = abs(existing.midY - r.midY)
+                    return dx < 15.0 && dy < 6.0
                 }
+                if isDuplicate { continue }
 
-                let fontSize = r.height * 0.85
-                var fontWeight: NSFont.Weight = .regular
-                if t.type == "hostname" {
-                    fontWeight = .semibold
-                } else if t.type == "mac" || t.type == "token" {
-                    fontWeight = .medium
-                }
-
-                var textColor = fgCenter
-                var bgR: CGFloat = 0, bgG: CGFloat = 0, bgB: CGFloat = 0, bgA: CGFloat = 0
-                bgLeft.getRed(&bgR, green: &bgG, blue: &bgB, alpha: &bgA)
-
-                var fgR: CGFloat = 0, fgG: CGFloat = 0, fgB: CGFloat = 0, fgA: CGFloat = 0
-                fgCenter.getRed(&fgR, green: &fgG, blue: &fgB, alpha: &fgA)
-
-                let colorDiff = abs(fgR - bgR) + abs(fgG - bgG) + abs(fgB - bgB)
-                if colorDiff < 0.15 {
-                    let brightness = (bgR + bgG + bgB) / 3.0
-                    textColor = brightness > 0.5 ? NSColor.black : NSColor.white
-                }
-
-                let font = NSFont.systemFont(ofSize: fontSize, weight: fontWeight)
-                let attributes: [NSAttributedString.Key: Any] = [
-                    .font: font,
-                    .foregroundColor: textColor
-                ]
-
-                let attrStr = NSAttributedString(string: t.replacement, attributes: attributes)
-                let drawPoint = CGPoint(x: r.minX, y: r.minY + (r.height - attrStr.size().height) / 2.0)
-                attrStr.draw(at: drawPoint)
+                let bg = sampleBackgroundColor(context: context, rect: r, width: width, height: height)
+                matchedRects.append(r)
+                matchRegions.append(MatchRegion(original: t.original, replacement: t.replacement, type: t.type, rect: r, bgColor: bg))
             }
+        }
+    }
+
+    NSGraphicsContext.saveGraphicsState()
+    let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
+    NSGraphicsContext.current = nsContext
+
+    // PASS 1: Erase ALL original target bounding boxes first
+    for region in matchRegions {
+        region.bgColor.setFill()
+        let eraseRect = CGRect(x: region.rect.minX, y: region.rect.minY, width: region.rect.width, height: region.rect.height)
+        NSBezierPath.fill(eraseRect)
+
+        if mode == "blur" {
+            NSColor.gray.withAlphaComponent(0.8).setFill()
+            NSBezierPath.fill(region.rect)
+        } else if mode == "pill" {
+            NSColor.darkGray.setFill()
+            NSBezierPath.fill(region.rect)
+        }
+    }
+
+    // PASS 2: Draw ALL synthetic replacement text cleanly over erased canvas
+    if mode == "synthetic" {
+        for region in matchRegions {
+            let r = region.rect
+            var bgR: CGFloat = 0, bgG: CGFloat = 0, bgB: CGFloat = 0, bgA: CGFloat = 0
+            region.bgColor.getRed(&bgR, green: &bgG, blue: &bgB, alpha: &bgA)
+            let bgBrightness = (bgR * 0.299 + bgG * 0.587 + bgB * 0.114)
+
+            var textColor: NSColor
+            var fontWeight: NSFont.Weight = .regular
+
+            if region.type == "hostname" {
+                fontWeight = .bold
+            } else if region.type == "mac" || region.type == "token" {
+                fontWeight = .medium
+            }
+
+            if bgBrightness > 0.5 {
+                textColor = (region.type == "ipv4") ? NSColor(srgbRed: 0.35, green: 0.35, blue: 0.37, alpha: 1.0) : NSColor.black
+            } else if bgR < 0.1 && bgB > 0.5 {
+                textColor = NSColor.white
+            } else {
+                textColor = (region.type == "ipv4") ? NSColor(srgbRed: 0.75, green: 0.75, blue: 0.77, alpha: 1.0) : NSColor.white
+            }
+
+            var fontSize: CGFloat = (region.type == "ipv4") ? 11.0 : (region.type == "hostname" ? 13.0 : 12.0)
+
+            var font = NSFont.systemFont(ofSize: fontSize, weight: fontWeight)
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: textColor
+            ]
+            var attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
+            var strSize = attrStr.size()
+
+            while (strSize.height > r.height || strSize.width > r.width + 12.0) && fontSize > 8.0 {
+                fontSize -= 0.5
+                font = NSFont.systemFont(ofSize: fontSize, weight: fontWeight)
+                attributes[.font] = font
+                attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
+                strSize = attrStr.size()
+            }
+
+            let textY = r.minY + (r.height - strSize.height) / 2.0
+            let drawPoint = CGPoint(x: r.minX, y: textY)
+            attrStr.draw(at: drawPoint)
         }
     }
 

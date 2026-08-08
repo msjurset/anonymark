@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net"
+	"os"
+	"os/user"
 	"regexp"
 	"strings"
 )
@@ -34,19 +36,49 @@ type Match struct {
 type Detector struct {
 	mapping      map[string]string
 	targetSubnet string
+	userTokens   []string
 }
 
 // NewDetector initializes a detector instance with session-level mapping consistency.
 func NewDetector() *Detector {
-	return &Detector{
+	d := &Detector{
 		mapping: make(map[string]string),
+	}
+	d.initUserTokens()
+	return d
+}
+
+func (d *Detector) initUserTokens() {
+	tokens := make(map[string]bool)
+
+	// Add current OS user if available
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		tokens[strings.ToLower(u.Username)] = true
+	}
+	if envUser := os.Getenv("USER"); envUser != "" {
+		tokens[strings.ToLower(envUser)] = true
+	}
+
+	// Always protect common surname / username variations in environment if present
+	for token := range tokens {
+		if len(token) >= 3 {
+			d.userTokens = append(d.userTokens, token)
+			// If username is e.g. "msjurseth", also extract base surname "sjurseth"
+			if strings.HasPrefix(token, "m") && len(token) > 4 {
+				d.userTokens = append(d.userTokens, token[1:])
+			}
+		}
+	}
+	if len(d.userTokens) == 0 {
+		d.userTokens = []string{"sjurseth", "msjurseth"}
 	}
 }
 
 var (
 	ipv4Regex     = regexp.MustCompile(`\b(?:10|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)\.(?:[0-9]{1,3})\.(?:[0-9]{1,3})\b`)
 	macRegex      = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{2}[:-]){5}(?:[0-9A-Fa-f]{2})\b`)
-	hostnameRegex = regexp.MustCompile(`\b[a-zA-Z0-9_-]+\.(?:lan|local|internal|home|hole)\b`)
+	hostnameRegex = regexp.MustCompile(`(?i)\b[a-zA-Z0-9_-]+\.(?:lan|local|internal|home|hole|domain|net|arpa|l\.\.\.|\.\.\.|\.l[a-z]*)\b`)
+	deviceHostRegex = regexp.MustCompile(`(?i)\b(?:esp32|esp|ha|home-assistant|retropie|retro|node|pi|airport|time-capsule|[a-zA-Z0-9_-]+-(?:airport|capsule|macbook|iphone|ipad|pc|nas|router|switch|ap|node|box|device|server|voice))[a-zA-Z0-9._-]*\b`)
 	userPathRegex = regexp.MustCompile(`/Users/([a-zA-Z0-9_-]+)`)
 	emailRegex    = regexp.MustCompile(`\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b`)
 	tokenRegex    = regexp.MustCompile(`\b(?:ghp_|gho_|sk-|akip_)[a-zA-Z0-9_-]{20,}\b`)
@@ -55,90 +87,114 @@ var (
 // DetectMatches finds all sensitive strings in the input text and assigns consistent synthetic replacements.
 func (d *Detector) DetectMatches(input string) []Match {
 	var matches []Match
+	seen := make(map[string]bool)
 
-	// Detect IPv4 addresses
+	addMatch := func(orig, repl string, tType TargetType, start, end int) {
+		key := fmt.Sprintf("%d:%d:%s", start, end, orig)
+		if !seen[key] {
+			seen[key] = true
+			matches = append(matches, Match{
+				Original:    orig,
+				Replacement: repl,
+				Type:        tType,
+				Start:       start,
+				End:         end,
+			})
+		}
+	}
+
+	// 1. Detect IPv4 addresses
 	for _, loc := range ipv4Regex.FindAllStringIndex(input, -1) {
 		orig := input[loc[0]:loc[1]]
 		repl := d.anonymizeIPv4(orig)
-		matches = append(matches, Match{
-			Original:    orig,
-			Replacement: repl,
-			Type:        TypeIPv4,
-			Start:       loc[0],
-			End:         loc[1],
-		})
+		addMatch(orig, repl, TypeIPv4, loc[0], loc[1])
 	}
 
-	// Detect MAC addresses
+	// 2. Detect MAC addresses
 	for _, loc := range macRegex.FindAllStringIndex(input, -1) {
 		orig := input[loc[0]:loc[1]]
 		repl := d.anonymizeMAC(orig)
-		matches = append(matches, Match{
-			Original:    orig,
-			Replacement: repl,
-			Type:        TypeMAC,
-			Start:       loc[0],
-			End:         loc[1],
-		})
+		addMatch(orig, repl, TypeMAC, loc[0], loc[1])
 	}
 
-	// Detect Hostnames
+	// 3. Detect Hostnames (standard domain extensions + device host patterns)
 	for _, loc := range hostnameRegex.FindAllStringIndex(input, -1) {
 		orig := input[loc[0]:loc[1]]
 		repl := d.anonymizeHostname(orig)
-		matches = append(matches, Match{
-			Original:    orig,
-			Replacement: repl,
-			Type:        TypeHostname,
-			Start:       loc[0],
-			End:         loc[1],
-		})
+		addMatch(orig, repl, TypeHostname, loc[0], loc[1])
+	}
+	for _, loc := range deviceHostRegex.FindAllStringIndex(input, -1) {
+		orig := input[loc[0]:loc[1]]
+		repl := d.anonymizeHostname(orig)
+		addMatch(orig, repl, TypeHostname, loc[0], loc[1])
 	}
 
-	// Detect User Paths
+	// 4. Detect User Paths & User Tokens anywhere in text
 	for _, loc := range userPathRegex.FindAllStringSubmatchIndex(input, -1) {
 		if len(loc) >= 4 {
 			user := input[loc[2]:loc[3]]
 			replUser := d.anonymizeUser(user)
 			orig := input[loc[0]:loc[1]]
 			repl := strings.Replace(orig, user, replUser, 1)
-			matches = append(matches, Match{
-				Original:    orig,
-				Replacement: repl,
-				Type:        TypeUserPath,
-				Start:       loc[0],
-				End:         loc[1],
-			})
+			addMatch(orig, repl, TypeUserPath, loc[0], loc[1])
 		}
 	}
 
-	// Detect Emails
+	// Check for direct occurrences of user surname / username tokens
+	inputLower := strings.ToLower(input)
+	for _, token := range d.userTokens {
+		pos := 0
+		for {
+			idx := strings.Index(inputLower[pos:], token)
+			if idx == -1 {
+				break
+			}
+			absStart := pos + idx
+			absEnd := absStart + len(token)
+			orig := input[absStart:absEnd]
+
+			// Check if part of a hostname or standalone word
+			wordStart := absStart
+			for wordStart > 0 && isWordChar(input[wordStart-1]) {
+				wordStart--
+			}
+			wordEnd := absEnd
+			for wordEnd < len(input) && isWordChar(input[wordEnd]) {
+				wordEnd++
+			}
+			fullWord := input[wordStart:wordEnd]
+
+			if strings.Contains(fullWord, ".") || strings.Contains(fullWord, "-") {
+				repl := d.anonymizeHostname(fullWord)
+				addMatch(fullWord, repl, TypeHostname, wordStart, wordEnd)
+			} else {
+				repl := d.anonymizeUser(orig)
+				addMatch(orig, repl, TypeUserPath, absStart, absEnd)
+			}
+
+			pos = absEnd
+		}
+	}
+
+	// 5. Detect Emails
 	for _, loc := range emailRegex.FindAllStringIndex(input, -1) {
 		orig := input[loc[0]:loc[1]]
 		repl := d.anonymizeEmail(orig)
-		matches = append(matches, Match{
-			Original:    orig,
-			Replacement: repl,
-			Type:        TypeEmail,
-			Start:       loc[0],
-			End:         loc[1],
-		})
+		addMatch(orig, repl, TypeEmail, loc[0], loc[1])
 	}
 
-	// Detect Tokens
+	// 6. Detect Tokens
 	for _, loc := range tokenRegex.FindAllStringIndex(input, -1) {
 		orig := input[loc[0]:loc[1]]
 		repl := d.anonymizeToken(orig)
-		matches = append(matches, Match{
-			Original:    orig,
-			Replacement: repl,
-			Type:        TypeToken,
-			Start:       loc[0],
-			End:         loc[1],
-		})
+		addMatch(orig, repl, TypeToken, loc[0], loc[1])
 	}
 
 	return matches
+}
+
+func isWordChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b == '-' || b == '.'
 }
 
 func (d *Detector) anonymizeIPv4(orig string) string {
@@ -155,7 +211,6 @@ func (d *Detector) anonymizeIPv4(orig string) string {
 		return "10.0.1.10"
 	}
 
-	// Guarantee consistent subnet prefix for all IPs in the same subnet
 	subnetKey := fmt.Sprintf("%d.%d.%d", ip4[0], ip4[1], ip4[2])
 	if d.targetSubnet == "" {
 		hash := sha256.Sum256([]byte(subnetKey))
@@ -184,25 +239,29 @@ func (d *Detector) anonymizeHostname(orig string) string {
 
 	parts := strings.Split(orig, ".")
 	name := parts[0]
-	suffix := "internal"
-	if len(parts) > 1 {
-		suffix = strings.Join(parts[1:], ".")
+	suffix := "lan"
+	if len(parts) > 1 && !strings.HasPrefix(parts[1], ".") && !strings.HasPrefix(parts[1], "l.") && !strings.HasPrefix(parts[1], "l..") {
+		suffix = parts[1]
 	}
 
-	// Preserve familiar hardware prefix (e.g. esp32, retropie, ha) while sanitizing user names
 	var prefix string
-	if strings.HasPrefix(name, "esp") {
+	lowerName := strings.ToLower(name)
+
+	if strings.HasPrefix(lowerName, "esp") {
 		prefix = "esp-"
-	} else if strings.HasPrefix(name, "ha") || strings.HasPrefix(name, "home-assistant") {
+	} else if strings.HasPrefix(lowerName, "ha") || strings.HasPrefix(lowerName, "home-assistant") {
 		prefix = "ha-"
-	} else if strings.HasPrefix(name, "retropie") {
+	} else if strings.HasPrefix(lowerName, "retropie") || strings.HasPrefix(lowerName, "retro") {
 		prefix = "retro-"
+	} else if strings.Contains(lowerName, "capsule") || strings.Contains(lowerName, "airport") {
+		prefix = "node-capsule-"
 	} else {
 		prefix = "node-"
 	}
 
 	hash := sha256.Sum256([]byte(orig))
-	repl := fmt.Sprintf("%s%02x.%s", prefix, hash[0], suffix)
+	hashNum := int(hash[0]) % 90 + 10
+	repl := fmt.Sprintf("%s%d.%s", prefix, hashNum, suffix)
 	d.mapping[orig] = repl
 	return repl
 }
