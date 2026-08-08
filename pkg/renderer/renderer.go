@@ -220,6 +220,9 @@ guard let image = NSImage(contentsOfFile: inputPath),
 let width = cgImage.width
 let height = cgImage.height
 
+// Calculate Retina 2x scale factor relative to standard 1x macOS point coordinates
+let scaleFactor = max(1.0, CGFloat(height) / 800.0)
+
 guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
       let context = CGContext(data: nil,
                               width: width,
@@ -314,6 +317,8 @@ struct MatchRegion {
     let replacement: String
     let type: String
     let rect: CGRect
+    let lineY: CGFloat
+    let lineH: CGFloat
     let bgColor: NSColor
     let category: LayoutCategory
 }
@@ -322,7 +327,7 @@ let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
 let request = VNRecognizeTextRequest { request, error in
     guard let observations = request.results as? [VNRecognizedTextObservation] else { return }
 
-    var rawMatches: [(target: TargetItem, rect: CGRect, lineH: CGFloat)] = []
+    var rawMatches: [(target: TargetItem, rect: CGRect, lineY: CGFloat, lineH: CGFloat, isStandaloneTitle: Bool)] = []
 
     for obs in observations {
         guard let topCandidate = obs.topCandidates(1).first else { continue }
@@ -334,7 +339,6 @@ let request = VNRecognizeTextRequest { request, error in
         for t in targets {
             var searchRange = text.startIndex..<text.endIndex
             while let range = text.range(of: t.original, options: [], range: searchRange) {
-                // Strict word-boundary guard to prevent partial substring matches (e.g. 192.168.86.1 inside 192.168.86.134)
                 if range.upperBound < text.endIndex {
                     let nextChar = text[range.upperBound]
                     if nextChar.isNumber || nextChar.isLetter {
@@ -357,23 +361,23 @@ let request = VNRecognizeTextRequest { request, error in
                 let w = box.boundingBox.width * CGFloat(width)
                 let r = CGRect(x: x, y: lineY, width: w, height: lineH)
 
+                let isPrecededByDescription = text.lowercased().contains("discovered at")
+                let isStandaloneTitle = !isPrecededByDescription
+
                 let isDuplicate = rawMatches.contains { existing in
                     let dx = abs(existing.rect.midX - r.midX)
                     let dy = abs(existing.rect.midY - r.midY)
                     return dx < 15.0 && dy < 6.0
                 }
                 if isDuplicate { continue }
-                rawMatches.append((target: t, rect: r, lineH: lineH))
+                rawMatches.append((target: t, rect: r, lineY: lineY, lineH: lineH, isStandaloneTitle: isStandaloneTitle))
             }
         }
     }
 
-    // Sort matches by Y position descending (top to bottom in AppKit coordinates)
     rawMatches.sort { $0.rect.minY > $1.rect.minY }
 
     var matchRegions: [MatchRegion] = []
-    var detailHeaderFound = false
-    var detailSubtitleFound = false
 
     for m in rawMatches {
         let r = m.rect
@@ -383,26 +387,16 @@ let request = VNRecognizeTextRequest { request, error in
 
         var category: LayoutCategory = .listPrimary
 
-        if xRatio > 0.45 && yRatio > 0.65 {
-            if !detailHeaderFound {
-                category = .headerTitle
-                detailHeaderFound = true
-            } else if !detailSubtitleFound {
-                category = .headerSubtitle
-                detailSubtitleFound = true
-            } else {
-                category = .detailLabel
-            }
-        } else if t.type == "ipv4" {
-            category = .listSecondary
-        } else if t.type == "hostname" {
+        if xRatio > 0.45 && yRatio > 0.80 {
+            category = .headerTitle
+        } else if m.isStandaloneTitle {
             category = .listPrimary
         } else {
-            category = .detailLabel
+            category = .listSecondary
         }
 
         let bg = sampleBackgroundColor(context: context, rect: r, width: width, height: height)
-        matchRegions.append(MatchRegion(original: t.original, replacement: t.replacement, type: t.type, rect: r, bgColor: bg, category: category))
+        matchRegions.append(MatchRegion(original: t.original, replacement: t.replacement, type: t.type, rect: r, lineY: m.lineY, lineH: m.lineH, bgColor: bg, category: category))
     }
 
     NSGraphicsContext.saveGraphicsState()
@@ -412,7 +406,7 @@ let request = VNRecognizeTextRequest { request, error in
     // PASS 1: Cleanly erase original target bounding boxes with +4px padding
     for region in matchRegions {
         region.bgColor.setFill()
-        let eraseRect = CGRect(x: region.rect.minX - 2, y: region.rect.minY - 2, width: region.rect.width + 4, height: region.rect.height + 4)
+        let eraseRect = CGRect(x: region.rect.minX - 2, y: region.lineY - 2, width: region.rect.width + 4, height: region.lineH + 4)
         NSBezierPath.fill(eraseRect)
 
         if mode == "blur" {
@@ -424,7 +418,7 @@ let request = VNRecognizeTextRequest { request, error in
         }
     }
 
-    // PASS 2: Render synthetic replacement text using EXACT SYSTEM TYPOGRAPHY
+    // PASS 2: Render synthetic replacement text using EXACT SYSTEM TYPOGRAPHY scaled for Retina canvas
     if mode == "synthetic" {
         for region in matchRegions {
             let r = region.rect
@@ -433,42 +427,44 @@ let request = VNRecognizeTextRequest { request, error in
             let bgBrightness = (bgR * 0.299 + bgG * 0.587 + bgB * 0.114)
             let isBlueBg = (bgR < 0.15 && bgB > 0.55)
 
-            var fontSize: CGFloat = 13.0
+            var baseFontSize: CGFloat = 14.0
             var fontWeight: NSFont.Weight = .semibold
             var textColor: NSColor = .white
 
             switch region.category {
             case .headerTitle:
-                fontSize = 18.0
+                baseFontSize = 18.0
                 fontWeight = .bold
                 textColor = .white
             case .headerSubtitle:
-                fontSize = 13.0
+                baseFontSize = 13.0
                 fontWeight = .regular
                 textColor = NSColor(srgbRed: 0.68, green: 0.68, blue: 0.72, alpha: 1.0)
             case .listPrimary:
-                fontSize = 13.0
+                baseFontSize = 14.0
                 fontWeight = .semibold
                 textColor = bgBrightness > 0.6 ? .black : .white
             case .listSecondary:
-                fontSize = 11.0
+                baseFontSize = 13.0
                 fontWeight = .regular
                 textColor = isBlueBg ? .white : (bgBrightness > 0.6 ? NSColor(srgbRed: 0.35, green: 0.35, blue: 0.37, alpha: 1.0) : NSColor(srgbRed: 0.68, green: 0.68, blue: 0.72, alpha: 1.0))
             case .detailLabel:
-                fontSize = 12.0
+                baseFontSize = 12.0
                 fontWeight = .medium
                 textColor = bgBrightness > 0.6 ? .black : NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1.0)
             }
 
-            var font = NSFont.systemFont(ofSize: fontSize, weight: fontWeight)
-            var attributes: [NSAttributedString.Key: Any] = [
+            let scaledFontSize = baseFontSize * scaleFactor
+            let font = NSFont.systemFont(ofSize: scaledFontSize, weight: fontWeight)
+            let attributes: [NSAttributedString.Key: Any] = [
                 .font: font,
                 .foregroundColor: textColor
             ]
-            var attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
-            var strSize = attrStr.size()
+            let attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
+            let strSize = attrStr.size()
 
-            let textY = r.minY + (r.height - strSize.height) / 2.0
+            // Exact font baseline alignment in pixel space
+            let textY = region.lineY + (region.lineH - strSize.height) / 2.0
             let drawPoint = CGPoint(x: r.minX, y: textY)
             attrStr.draw(at: drawPoint)
         }

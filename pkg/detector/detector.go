@@ -78,7 +78,7 @@ var (
 	ipv4Regex       = regexp.MustCompile(`\b(?:10|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)\.(?:[0-9]{1,3})\.(?:[0-9]{1,3})\b`)
 	macRegex        = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{2}[:-]){5}(?:[0-9A-Fa-f]{2})\b`)
 	hostnameRegex   = regexp.MustCompile(`(?i)\b[a-zA-Z0-9_-]+\.(?:lan|local|internal|home|hole|domain|net|arpa|l\.\.\.|\.\.\.|\.l[a-z]*)\b`)
-	deviceHostRegex = regexp.MustCompile(`(?i)\b(?:esp32|esp|ha|home-assistant|retropie|retro|node|pi|airport|time-capsule|[a-zA-Z0-9_-]+-(?:airport|capsule|macbook|iphone|ipad|pc|nas|router|switch|ap|node|box|device|server|voice))[a-zA-Z0-9._-]*\b`)
+	deviceHostRegex = regexp.MustCompile(`(?i)\b(?:esp32|esp|ha|home-assistant|retropie|retro|node|pi-[a-zA-Z0-9_-]+|pi[0-9]+|airport|time-capsule|[a-zA-Z0-9_-]+-(?:airport|capsule|macbook|iphone|ipad|pc|nas|router|switch|ap|node|box|device|server|voice))[a-zA-Z0-9._-]*\b`)
 	userPathRegex   = regexp.MustCompile(`/Users/([a-zA-Z0-9_-]+)`)
 	emailRegex      = regexp.MustCompile(`\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b`)
 	tokenRegex      = regexp.MustCompile(`\b(?:ghp_|gho_|sk-|akip_)[a-zA-Z0-9_-]{20,}\b`)
@@ -252,7 +252,9 @@ func (d *Detector) anonymizeHostname(orig string) string {
 	var prefix string
 	lowerName := strings.ToLower(name)
 
-	if strings.HasPrefix(lowerName, "esp") {
+	if lowerName == "pi" {
+		prefix = "n-"
+	} else if strings.HasPrefix(lowerName, "esp") {
 		prefix = "esp-"
 	} else if strings.HasPrefix(lowerName, "ha") || strings.HasPrefix(lowerName, "home-assistant") {
 		prefix = "ha-"
