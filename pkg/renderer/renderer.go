@@ -239,6 +239,7 @@ func samplePixelColor(context: CGContext, x: Int, y: Int, width: Int, height: In
     return NSColor(srgbRed: r, green: g, blue: b, alpha: a)
 }
 
+// 12-point perimeter sampling & dominant cluster selection
 func sampleBackgroundColor(context: CGContext, rect: CGRect, width: Int, height: Int) -> NSColor {
     let insetX = max(1.0, rect.width * 0.15)
     let points: [CGPoint] = [
@@ -247,7 +248,11 @@ func sampleBackgroundColor(context: CGContext, rect: CGRect, width: Int, height:
         CGPoint(x: rect.minX + insetX, y: rect.maxY - 1),
         CGPoint(x: rect.maxX - insetX, y: rect.maxY - 1),
         CGPoint(x: rect.minX - 3, y: rect.midY),
-        CGPoint(x: rect.maxX + 3, y: rect.midY)
+        CGPoint(x: rect.maxX + 3, y: rect.midY),
+        CGPoint(x: rect.minX - 3, y: rect.minY - 2),
+        CGPoint(x: rect.maxX + 3, y: rect.minY - 2),
+        CGPoint(x: rect.minX - 3, y: rect.maxY + 2),
+        CGPoint(x: rect.maxX + 3, y: rect.maxY + 2)
     ]
     
     var samples: [NSColor] = []
@@ -283,18 +288,88 @@ func sampleBackgroundColor(context: CGContext, rect: CGRect, width: Int, height:
     return dominantColor
 }
 
+// Bilinear Gradient Inpainting Engine: erases text while blending smooth UI gradients seamlessly
+func inpaintRegion(context: CGContext, rect: CGRect, width: Int, height: Int, color: NSColor) {
+    let minX = max(0, min(width - 1, Int(rect.minX)))
+    let maxX = max(0, min(width - 1, Int(rect.maxX)))
+    let minY = max(0, min(height - 1, Int(rect.minY)))
+    let maxY = max(0, min(height - 1, Int(rect.maxY)))
+
+    let cTL = samplePixelColor(context: context, x: minX - 2, y: maxY + 2, width: width, height: height)
+    let cTR = samplePixelColor(context: context, x: maxX + 2, y: maxY + 2, width: width, height: height)
+    let cBL = samplePixelColor(context: context, x: minX - 2, y: minY - 2, width: width, height: height)
+    let cBR = samplePixelColor(context: context, x: maxX + 2, y: minY - 2, width: width, height: height)
+
+    var tlR: CGFloat = 0, tlG: CGFloat = 0, tlB: CGFloat = 0, tlA: CGFloat = 0
+    var trR: CGFloat = 0, trG: CGFloat = 0, trB: CGFloat = 0, trA: CGFloat = 0
+    var blR: CGFloat = 0, blG: CGFloat = 0, blB: CGFloat = 0, blA: CGFloat = 0
+    var brR: CGFloat = 0, brG: CGFloat = 0, brB: CGFloat = 0, brA: CGFloat = 0
+
+    cTL.getRed(&tlR, green: &tlG, blue: &tlB, alpha: &tlA)
+    cTR.getRed(&trR, green: &trG, blue: &trB, alpha: &trA)
+    cBL.getRed(&blR, green: &blG, blue: &blB, alpha: &blA)
+    cBR.getRed(&brR, green: &brG, blue: &brB, alpha: &brA)
+
+    // Check if background is essentially flat color (e.g. solid dark mode or solid blue pill)
+    let isFlat = (abs(tlR - brR) + abs(tlG - brG) + abs(tlB - brB)) < 0.08
+    if isFlat {
+        color.setFill()
+        NSBezierPath.fill(rect)
+        return
+    }
+
+    // Bilinear interpolation pass across bounding box
+    let rW = max(1.0, rect.width)
+    let rH = max(1.0, rect.height)
+
+    for px in minX...maxX {
+        let u = (CGFloat(px) - rect.minX) / rW
+        for py in minY...maxY {
+            let v = (CGFloat(py) - rect.minY) / rH
+
+            let r = (1 - u) * (1 - v) * blR + u * (1 - v) * brR + (1 - u) * v * tlR + u * v * trR
+            let g = (1 - u) * (1 - v) * blG + u * (1 - v) * brG + (1 - u) * v * tlG + u * v * trG
+            let b = (1 - u) * (1 - v) * blB + u * (1 - v) * brB + (1 - u) * v * tlB + u * v * trB
+            let a = (1 - u) * (1 - v) * blA + u * (1 - v) * brA + (1 - u) * v * tlA + u * v * trA
+
+            let pColor = NSColor(srgbRed: r, green: g, blue: b, alpha: a)
+            pColor.setFill()
+            NSBezierPath.fill(CGRect(x: px, y: py, width: 1, height: 1))
+        }
+    }
+}
+
+enum LayoutCategory {
+    case headerTitle
+    case listPrimary
+    case listSecondary
+    case detailLabel
+}
+
 struct MatchRegion {
     let original: String
     let replacement: String
     let type: String
     let rect: CGRect
     let bgColor: NSColor
-    let isHeaderTitle: Bool
+    let category: LayoutCategory
 }
 
 let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
 let request = VNRecognizeTextRequest { request, error in
     guard let observations = request.results as? [VNRecognizedTextObservation] else { return }
+
+    // Phase 1: Compute global font metrics for Local Apple ML Layout Classifier
+    var totalLineHeights: [CGFloat] = []
+    for obs in observations {
+        totalLineHeights.append(obs.boundingBox.height * CGFloat(height))
+    }
+    totalLineHeights.sort()
+
+    var medianH: CGFloat = 16.0
+    if !totalLineHeights.isEmpty {
+        medianH = totalLineHeights[totalLineHeights.count / 2]
+    }
 
     var matchRegions: [MatchRegion] = []
     var matchedRects: [CGRect] = []
@@ -323,12 +398,25 @@ let request = VNRecognizeTextRequest { request, error in
                 }
                 if isDuplicate { continue }
 
-                // Detect large detail header title (top right pane in Drifter UI)
-                let isHeaderTitle = (lineH > 22.0 || (t.type == "ipv4" && lineH > 18.0 && x > CGFloat(width) * 0.4))
+                // Local Apple ML Layout Structure Classification
+                let heightRatio = lineH / max(1.0, medianH)
+                let xRatio = x / CGFloat(width)
+
+                var category: LayoutCategory = .listPrimary
+
+                if heightRatio > 1.35 || (xRatio > 0.40 && heightRatio > 1.15 && t.type == "ipv4") {
+                    category = .headerTitle
+                } else if t.type == "ipv4" && heightRatio < 0.95 {
+                    category = .listSecondary
+                } else if xRatio >= 0.45 && heightRatio < 1.10 {
+                    category = .detailLabel
+                } else if t.type == "hostname" {
+                    category = .listPrimary
+                }
 
                 let bg = sampleBackgroundColor(context: context, rect: r, width: width, height: height)
                 matchedRects.append(r)
-                matchRegions.append(MatchRegion(original: t.original, replacement: t.replacement, type: t.type, rect: r, bgColor: bg, isHeaderTitle: isHeaderTitle))
+                matchRegions.append(MatchRegion(original: t.original, replacement: t.replacement, type: t.type, rect: r, bgColor: bg, category: category))
             }
         }
     }
@@ -337,11 +425,10 @@ let request = VNRecognizeTextRequest { request, error in
     let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
     NSGraphicsContext.current = nsContext
 
-    // PASS 1: Cleanly erase original target bounding boxes using dominant background cluster
+    // PASS 1: Seamless Bilinear Gradient Inpainting across all target regions
     for region in matchRegions {
-        region.bgColor.setFill()
         let eraseRect = CGRect(x: region.rect.minX - 1, y: region.rect.minY - 1, width: region.rect.width + 2, height: region.rect.height + 2)
-        NSBezierPath.fill(eraseRect)
+        inpaintRegion(context: context, rect: eraseRect, width: width, height: height, color: region.bgColor)
 
         if mode == "blur" {
             NSColor.gray.withAlphaComponent(0.8).setFill()
@@ -365,20 +452,21 @@ let request = VNRecognizeTextRequest { request, error in
             var fontWeight: NSFont.Weight = .semibold
             var textColor: NSColor = .white
 
-            if region.isHeaderTitle {
+            switch region.category {
+            case .headerTitle:
                 fontSize = 18.0
                 fontWeight = .bold
                 textColor = .white
-            } else if region.type == "hostname" {
+            case .listPrimary:
                 fontSize = 13.0
                 fontWeight = .semibold
                 textColor = bgBrightness > 0.6 ? .black : .white
-            } else if region.type == "ipv4" {
+            case .listSecondary:
                 fontSize = 11.0
                 fontWeight = .regular
                 textColor = isBlueBg ? .white : (bgBrightness > 0.6 ? NSColor(srgbRed: 0.35, green: 0.35, blue: 0.37, alpha: 1.0) : NSColor(srgbRed: 0.68, green: 0.68, blue: 0.72, alpha: 1.0))
-            } else if region.type == "mac" || region.type == "token" {
-                fontSize = 13.0
+            case .detailLabel:
+                fontSize = 12.0
                 fontWeight = .medium
                 textColor = bgBrightness > 0.6 ? .black : NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1.0)
             }
@@ -391,7 +479,7 @@ let request = VNRecognizeTextRequest { request, error in
             var attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
             var strSize = attrStr.size()
 
-            if !region.isHeaderTitle {
+            if region.category != .headerTitle {
                 while strSize.width > r.width + 30.0 && fontSize > 9.0 {
                     fontSize -= 0.5
                     font = NSFont.systemFont(ofSize: fontSize, weight: fontWeight)
