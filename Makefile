@@ -1,4 +1,4 @@
-.PHONY: build test clean install
+.PHONY: build test clean install deploy
 
 BINARY_NAME = anonymark
 BUILD_DIR = bin
@@ -13,4 +13,7 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 install: build
-	cp $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/$(BINARY_NAME)
+	install -d ~/.local/bin
+	install -m 755 $(BUILD_DIR)/$(BINARY_NAME) ~/.local/bin/$(BINARY_NAME)
+
+deploy: build install
