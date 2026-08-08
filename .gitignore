@@ -1,0 +1,7 @@
+bin/
+*.png
+*.jpg
+*.jpeg
+.DS_Store
+GEMINI.md
+CLAUDE.md
