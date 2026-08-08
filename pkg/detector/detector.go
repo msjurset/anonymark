@@ -32,7 +32,8 @@ type Match struct {
 
 // Detector scans text or metadata for sensitive PII patterns.
 type Detector struct {
-	mapping map[string]string
+	mapping      map[string]string
+	targetSubnet string
 }
 
 // NewDetector initializes a detector instance with session-level mapping consistency.
@@ -144,12 +145,24 @@ func (d *Detector) anonymizeIPv4(orig string) string {
 	if repl, exists := d.mapping[orig]; exists {
 		return repl
 	}
-	hash := sha256.Sum256([]byte(orig))
+
 	ip := net.ParseIP(orig)
 	if ip == nil {
 		return "10.0.1.10"
 	}
-	repl := fmt.Sprintf("10.0.%d.%d", hash[0]%250+1, hash[1]%250+1)
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return "10.0.1.10"
+	}
+
+	// Guarantee consistent subnet prefix for all IPs in the same subnet
+	subnetKey := fmt.Sprintf("%d.%d.%d", ip4[0], ip4[1], ip4[2])
+	if d.targetSubnet == "" {
+		hash := sha256.Sum256([]byte(subnetKey))
+		d.targetSubnet = fmt.Sprintf("10.0.%d", hash[0]%200+1)
+	}
+
+	repl := fmt.Sprintf("%s.%d", d.targetSubnet, ip4[3])
 	d.mapping[orig] = repl
 	return repl
 }
@@ -168,15 +181,28 @@ func (d *Detector) anonymizeHostname(orig string) string {
 	if repl, exists := d.mapping[orig]; exists {
 		return repl
 	}
+
 	parts := strings.Split(orig, ".")
+	name := parts[0]
 	suffix := "internal"
 	if len(parts) > 1 {
-		suffix = parts[len(parts)-1]
+		suffix = strings.Join(parts[1:], ".")
 	}
+
+	// Preserve familiar hardware prefix (e.g. esp32, retropie, ha) while sanitizing user names
+	var prefix string
+	if strings.HasPrefix(name, "esp") {
+		prefix = "esp-"
+	} else if strings.HasPrefix(name, "ha") || strings.HasPrefix(name, "home-assistant") {
+		prefix = "ha-"
+	} else if strings.HasPrefix(name, "retropie") {
+		prefix = "retro-"
+	} else {
+		prefix = "node-"
+	}
+
 	hash := sha256.Sum256([]byte(orig))
-	names := []string{"node", "gateway", "service", "cluster", "host", "core", "agent"}
-	nameChoice := names[int(hash[0])%len(names)]
-	repl := fmt.Sprintf("%s-%02x.%s", nameChoice, hash[1], suffix)
+	repl := fmt.Sprintf("%s%02x.%s", prefix, hash[0], suffix)
 	d.mapping[orig] = repl
 	return repl
 }
