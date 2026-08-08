@@ -75,13 +75,13 @@ func (d *Detector) initUserTokens() {
 }
 
 var (
-	ipv4Regex     = regexp.MustCompile(`\b(?:10|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)\.(?:[0-9]{1,3})\.(?:[0-9]{1,3})\b`)
-	macRegex      = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{2}[:-]){5}(?:[0-9A-Fa-f]{2})\b`)
-	hostnameRegex = regexp.MustCompile(`(?i)\b[a-zA-Z0-9_-]+\.(?:lan|local|internal|home|hole|domain|net|arpa|l\.\.\.|\.\.\.|\.l[a-z]*)\b`)
+	ipv4Regex       = regexp.MustCompile(`\b(?:10|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)\.(?:[0-9]{1,3})\.(?:[0-9]{1,3})\b`)
+	macRegex        = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{2}[:-]){5}(?:[0-9A-Fa-f]{2})\b`)
+	hostnameRegex   = regexp.MustCompile(`(?i)\b[a-zA-Z0-9_-]+\.(?:lan|local|internal|home|hole|domain|net|arpa|l\.\.\.|\.\.\.|\.l[a-z]*)\b`)
 	deviceHostRegex = regexp.MustCompile(`(?i)\b(?:esp32|esp|ha|home-assistant|retropie|retro|node|pi|airport|time-capsule|[a-zA-Z0-9_-]+-(?:airport|capsule|macbook|iphone|ipad|pc|nas|router|switch|ap|node|box|device|server|voice))[a-zA-Z0-9._-]*\b`)
-	userPathRegex = regexp.MustCompile(`/Users/([a-zA-Z0-9_-]+)`)
-	emailRegex    = regexp.MustCompile(`\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b`)
-	tokenRegex    = regexp.MustCompile(`\b(?:ghp_|gho_|sk-|akip_)[a-zA-Z0-9_-]{20,}\b`)
+	userPathRegex   = regexp.MustCompile(`/Users/([a-zA-Z0-9_-]+)`)
+	emailRegex      = regexp.MustCompile(`\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b`)
+	tokenRegex      = regexp.MustCompile(`\b(?:ghp_|gho_|sk-|akip_)[a-zA-Z0-9_-]{20,}\b`)
 )
 
 // DetectMatches finds all sensitive strings in the input text and assigns consistent synthetic replacements.
@@ -240,8 +240,13 @@ func (d *Detector) anonymizeHostname(orig string) string {
 	parts := strings.Split(orig, ".")
 	name := parts[0]
 	suffix := "lan"
-	if len(parts) > 1 && !strings.HasPrefix(parts[1], ".") && !strings.HasPrefix(parts[1], "l.") && !strings.HasPrefix(parts[1], "l..") {
-		suffix = parts[1]
+	if len(parts) > 1 {
+		s := strings.TrimRight(parts[1], ".")
+		if s == "l" || s == "local" || strings.HasPrefix(s, "loc") {
+			suffix = "local"
+		} else if s != "" && !strings.HasPrefix(s, "l..") && !strings.HasPrefix(s, "l.") {
+			suffix = s
+		}
 	}
 
 	var prefix string

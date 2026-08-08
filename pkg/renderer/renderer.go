@@ -226,11 +226,12 @@ guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
 
 context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 
+// Flips Y coordinate when indexing raw bitmap byte buffer (since CGContext memory starts at top-left)
 func samplePixelColor(context: CGContext, x: Int, y: Int, width: Int, height: Int) -> NSColor {
     guard let dataPtr = context.data else { return NSColor.black }
     let pointer = dataPtr.bindMemory(to: UInt8.self, capacity: width * height * 4)
     let safeX = max(0, min(width - 1, x))
-    let safeY = max(0, min(height - 1, y))
+    let safeY = max(0, min(height - 1, (height - 1) - y))
     let offset = (safeY * width + safeX) * 4
     let r = CGFloat(pointer[offset]) / 255.0
     let g = CGFloat(pointer[offset + 1]) / 255.0
@@ -239,108 +240,62 @@ func samplePixelColor(context: CGContext, x: Int, y: Int, width: Int, height: In
     return NSColor(srgbRed: r, green: g, blue: b, alpha: a)
 }
 
-// 12-point perimeter sampling & dominant cluster selection
 func sampleBackgroundColor(context: CGContext, rect: CGRect, width: Int, height: Int) -> NSColor {
-    let insetX = max(1.0, rect.width * 0.15)
-    let points: [CGPoint] = [
-        CGPoint(x: rect.minX + insetX, y: rect.minY + 1),
-        CGPoint(x: rect.maxX - insetX, y: rect.minY + 1),
-        CGPoint(x: rect.minX + insetX, y: rect.maxY - 1),
-        CGPoint(x: rect.maxX - insetX, y: rect.maxY - 1),
-        CGPoint(x: rect.minX - 3, y: rect.midY),
-        CGPoint(x: rect.maxX + 3, y: rect.midY),
-        CGPoint(x: rect.minX - 3, y: rect.minY - 2),
-        CGPoint(x: rect.maxX + 3, y: rect.minY - 2),
-        CGPoint(x: rect.minX - 3, y: rect.maxY + 2),
-        CGPoint(x: rect.maxX + 3, y: rect.maxY + 2)
-    ]
-    
-    var samples: [NSColor] = []
-    for pt in points {
-        let x = max(0, min(width - 1, Int(pt.x)))
-        let y = max(0, min(height - 1, Int(pt.y)))
-        samples.append(samplePixelColor(context: context, x: x, y: y, width: width, height: height))
-    }
-    
-    var maxClusterCount = 0
-    var dominantColor = samples[0]
-    
-    for c1 in samples {
-        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
-        c1.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
-        var clusterCount = 0
-        
-        for c2 in samples {
-            var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
-            c2.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
-            let dist = abs(r1 - r2) + abs(g1 - g2) + abs(b1 - b2)
-            if dist < 0.20 {
-                clusterCount += 1
-            }
-        }
-        
-        if clusterCount > maxClusterCount {
-            maxClusterCount = clusterCount
-            dominantColor = c1
-        }
-    }
-    
-    return dominantColor
-}
-
-// Bilinear Gradient Inpainting Engine: erases text while blending smooth UI gradients seamlessly
-func inpaintRegion(context: CGContext, rect: CGRect, width: Int, height: Int, color: NSColor) {
     let minX = max(0, min(width - 1, Int(rect.minX)))
     let maxX = max(0, min(width - 1, Int(rect.maxX)))
     let minY = max(0, min(height - 1, Int(rect.minY)))
     let maxY = max(0, min(height - 1, Int(rect.maxY)))
 
-    let cTL = samplePixelColor(context: context, x: minX - 2, y: maxY + 2, width: width, height: height)
-    let cTR = samplePixelColor(context: context, x: maxX + 2, y: maxY + 2, width: width, height: height)
-    let cBL = samplePixelColor(context: context, x: minX - 2, y: minY - 2, width: width, height: height)
-    let cBR = samplePixelColor(context: context, x: maxX + 2, y: minY - 2, width: width, height: height)
+    var samples: [NSColor] = []
+    let margin = 2
+    let sMinX = max(0, minX - margin)
+    let sMaxX = min(width - 1, maxX + margin)
+    let sMinY = max(0, minY - margin)
+    let sMaxY = min(height - 1, maxY + margin)
 
-    var tlR: CGFloat = 0, tlG: CGFloat = 0, tlB: CGFloat = 0, tlA: CGFloat = 0
-    var trR: CGFloat = 0, trG: CGFloat = 0, trB: CGFloat = 0, trA: CGFloat = 0
-    var blR: CGFloat = 0, blG: CGFloat = 0, blB: CGFloat = 0, blA: CGFloat = 0
-    var brR: CGFloat = 0, brG: CGFloat = 0, brB: CGFloat = 0, brA: CGFloat = 0
+    let stepX = max(1, (sMaxX - sMinX) / 8)
+    let stepY = max(1, (sMaxY - sMinY) / 4)
 
-    cTL.getRed(&tlR, green: &tlG, blue: &tlB, alpha: &tlA)
-    cTR.getRed(&trR, green: &trG, blue: &trB, alpha: &trA)
-    cBL.getRed(&blR, green: &blG, blue: &blB, alpha: &blA)
-    cBR.getRed(&brR, green: &brG, blue: &brB, alpha: &brA)
-
-    // Check if background is essentially flat color (e.g. solid dark mode or solid blue pill)
-    let isFlat = (abs(tlR - brR) + abs(tlG - brG) + abs(tlB - brB)) < 0.08
-    if isFlat {
-        color.setFill()
-        NSBezierPath.fill(rect)
-        return
+    for x in stride(from: sMinX, to: sMaxX, by: stepX) {
+        samples.append(samplePixelColor(context: context, x: x, y: sMaxY, width: width, height: height))
+        samples.append(samplePixelColor(context: context, x: x, y: sMinY, width: width, height: height))
+    }
+    for y in stride(from: sMinY, to: sMaxY, by: stepY) {
+        samples.append(samplePixelColor(context: context, x: sMinX, y: y, width: width, height: height))
+        samples.append(samplePixelColor(context: context, x: sMaxX, y: y, width: width, height: height))
     }
 
-    // Bilinear interpolation pass across bounding box
-    let rW = max(1.0, rect.width)
-    let rH = max(1.0, rect.height)
+    if samples.isEmpty {
+        return NSColor(srgbRed: 0.18, green: 0.18, blue: 0.18, alpha: 1.0)
+    }
 
-    for px in minX...maxX {
-        let u = (CGFloat(px) - rect.minX) / rW
-        for py in minY...maxY {
-            let v = (CGFloat(py) - rect.minY) / rH
+    var maxClusterCount = 0
+    var dominantColor = samples[0]
 
-            let r = (1 - u) * (1 - v) * blR + u * (1 - v) * brR + (1 - u) * v * tlR + u * v * trR
-            let g = (1 - u) * (1 - v) * blG + u * (1 - v) * brG + (1 - u) * v * tlG + u * v * trG
-            let b = (1 - u) * (1 - v) * blB + u * (1 - v) * brB + (1 - u) * v * tlB + u * v * trB
-            let a = (1 - u) * (1 - v) * blA + u * (1 - v) * brA + (1 - u) * v * tlA + u * v * trA
-
-            let pColor = NSColor(srgbRed: r, green: g, blue: b, alpha: a)
-            pColor.setFill()
-            NSBezierPath.fill(CGRect(x: px, y: py, width: 1, height: 1))
+    for c1 in samples {
+        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+        c1.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
+        var count = 0
+        for c2 in samples {
+            var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+            c2.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+            let dist = abs(r1 - r2) + abs(g1 - g2) + abs(b1 - b2)
+            if dist < 0.20 {
+                count += 1
+            }
+        }
+        if count > maxClusterCount {
+            maxClusterCount = count
+            dominantColor = c1
         }
     }
+
+    return dominantColor
 }
 
 enum LayoutCategory {
     case headerTitle
+    case headerSubtitle
     case listPrimary
     case listSecondary
     case detailLabel
@@ -359,20 +314,7 @@ let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
 let request = VNRecognizeTextRequest { request, error in
     guard let observations = request.results as? [VNRecognizedTextObservation] else { return }
 
-    // Phase 1: Compute global font metrics for Local Apple ML Layout Classifier
-    var totalLineHeights: [CGFloat] = []
-    for obs in observations {
-        totalLineHeights.append(obs.boundingBox.height * CGFloat(height))
-    }
-    totalLineHeights.sort()
-
-    var medianH: CGFloat = 16.0
-    if !totalLineHeights.isEmpty {
-        medianH = totalLineHeights[totalLineHeights.count / 2]
-    }
-
-    var matchRegions: [MatchRegion] = []
-    var matchedRects: [CGRect] = []
+    var rawMatches: [(target: TargetItem, rect: CGRect, lineH: CGFloat)] = []
 
     for obs in observations {
         guard let topCandidate = obs.topCandidates(1).first else { continue }
@@ -391,44 +333,59 @@ let request = VNRecognizeTextRequest { request, error in
                 let w = box.boundingBox.width * CGFloat(width)
                 let r = CGRect(x: x, y: lineY, width: w, height: lineH)
 
-                let isDuplicate = matchedRects.contains { existing in
-                    let dx = abs(existing.midX - r.midX)
-                    let dy = abs(existing.midY - r.midY)
+                let isDuplicate = rawMatches.contains { existing in
+                    let dx = abs(existing.rect.midX - r.midX)
+                    let dy = abs(existing.rect.midY - r.midY)
                     return dx < 15.0 && dy < 6.0
                 }
                 if isDuplicate { continue }
-
-                // Local Apple ML Layout Structure Classification
-                let heightRatio = lineH / max(1.0, medianH)
-                let xRatio = x / CGFloat(width)
-
-                var category: LayoutCategory = .listPrimary
-
-                if heightRatio > 1.35 || (xRatio > 0.40 && heightRatio > 1.15 && t.type == "ipv4") {
-                    category = .headerTitle
-                } else if t.type == "ipv4" && heightRatio < 0.95 {
-                    category = .listSecondary
-                } else if xRatio >= 0.45 && heightRatio < 1.10 {
-                    category = .detailLabel
-                } else if t.type == "hostname" {
-                    category = .listPrimary
-                }
-
-                let bg = sampleBackgroundColor(context: context, rect: r, width: width, height: height)
-                matchedRects.append(r)
-                matchRegions.append(MatchRegion(original: t.original, replacement: t.replacement, type: t.type, rect: r, bgColor: bg, category: category))
+                rawMatches.append((target: t, rect: r, lineH: lineH))
             }
         }
+    }
+
+    // Sort matches by Y position descending (top to bottom in AppKit coordinates)
+    rawMatches.sort { $0.rect.minY > $1.rect.minY }
+
+    var matchRegions: [MatchRegion] = []
+    var detailTitleFound = false
+
+    for m in rawMatches {
+        let r = m.rect
+        let t = m.target
+        let xRatio = r.minX / CGFloat(width)
+        let yRatio = r.minY / CGFloat(height)
+
+        var category: LayoutCategory = .listPrimary
+
+        if xRatio > 0.45 && yRatio > 0.65 {
+            if !detailTitleFound {
+                category = .headerTitle
+                detailTitleFound = true
+            } else {
+                category = .headerSubtitle
+            }
+        } else if t.type == "ipv4" {
+            category = .listSecondary
+        } else if t.type == "hostname" {
+            category = .listPrimary
+        } else {
+            category = .detailLabel
+        }
+
+        let bg = sampleBackgroundColor(context: context, rect: r, width: width, height: height)
+        matchRegions.append(MatchRegion(original: t.original, replacement: t.replacement, type: t.type, rect: r, bgColor: bg, category: category))
     }
 
     NSGraphicsContext.saveGraphicsState()
     let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
     NSGraphicsContext.current = nsContext
 
-    // PASS 1: Seamless Bilinear Gradient Inpainting across all target regions
+    // PASS 1: Cleanly erase original target bounding boxes using exact background color
     for region in matchRegions {
+        region.bgColor.setFill()
         let eraseRect = CGRect(x: region.rect.minX - 1, y: region.rect.minY - 1, width: region.rect.width + 2, height: region.rect.height + 2)
-        inpaintRegion(context: context, rect: eraseRect, width: width, height: height, color: region.bgColor)
+        NSBezierPath.fill(eraseRect)
 
         if mode == "blur" {
             NSColor.gray.withAlphaComponent(0.8).setFill()
@@ -439,7 +396,7 @@ let request = VNRecognizeTextRequest { request, error in
         }
     }
 
-    // PASS 2: Render synthetic replacement text using UNIFORM TYPOGRAPHY & NO FONT SIZE FLICKER
+    // PASS 2: Render synthetic replacement text using UNIFORM TYPOGRAPHY
     if mode == "synthetic" {
         for region in matchRegions {
             let r = region.rect
@@ -457,6 +414,10 @@ let request = VNRecognizeTextRequest { request, error in
                 fontSize = 18.0
                 fontWeight = .bold
                 textColor = .white
+            case .headerSubtitle:
+                fontSize = 13.0
+                fontWeight = .regular
+                textColor = NSColor(srgbRed: 0.68, green: 0.68, blue: 0.72, alpha: 1.0)
             case .listPrimary:
                 fontSize = 13.0
                 fontWeight = .semibold
@@ -480,7 +441,7 @@ let request = VNRecognizeTextRequest { request, error in
             var strSize = attrStr.size()
 
             if region.category != .headerTitle {
-                while strSize.width > r.width + 30.0 && fontSize > 9.0 {
+                while strSize.width > r.width + 35.0 && fontSize > 9.0 {
                     fontSize -= 0.5
                     font = NSFont.systemFont(ofSize: fontSize, weight: fontWeight)
                     attributes[.font] = font
