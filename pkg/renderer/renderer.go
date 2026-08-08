@@ -240,35 +240,47 @@ func samplePixelColor(context: CGContext, x: Int, y: Int, width: Int, height: In
 }
 
 func sampleBackgroundColor(context: CGContext, rect: CGRect, width: Int, height: Int) -> NSColor {
-    let margin: CGFloat = 3.0
+    let insetX = max(1.0, rect.width * 0.15)
     let points: [CGPoint] = [
-        CGPoint(x: rect.minX - margin, y: rect.midY),
-        CGPoint(x: rect.maxX + margin, y: rect.midY),
-        CGPoint(x: rect.midX, y: rect.minY - margin),
-        CGPoint(x: rect.midX, y: rect.maxY + margin),
-        CGPoint(x: rect.minX - margin, y: rect.minY - margin),
-        CGPoint(x: rect.maxX + margin, y: rect.minY - margin),
-        CGPoint(x: rect.minX - margin, y: rect.maxY + margin),
-        CGPoint(x: rect.maxX + margin, y: rect.maxY + margin)
+        CGPoint(x: rect.minX + insetX, y: rect.minY + 1),
+        CGPoint(x: rect.maxX - insetX, y: rect.minY + 1),
+        CGPoint(x: rect.minX + insetX, y: rect.maxY - 1),
+        CGPoint(x: rect.maxX - insetX, y: rect.maxY - 1),
+        CGPoint(x: rect.minX - 3, y: rect.midY),
+        CGPoint(x: rect.maxX + 3, y: rect.midY)
     ]
     
-    var rSum: CGFloat = 0, gSum: CGFloat = 0, bSum: CGFloat = 0, aSum: CGFloat = 0
-    var count: CGFloat = 0
-    
+    var samples: [NSColor] = []
     for pt in points {
         let x = max(0, min(width - 1, Int(pt.x)))
         let y = max(0, min(height - 1, Int(pt.y)))
-        let c = samplePixelColor(context: context, x: x, y: y, width: width, height: height)
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        c.getRed(&r, green: &g, blue: &b, alpha: &a)
-        rSum += r
-        gSum += g
-        bSum += b
-        aSum += a
-        count += 1
+        samples.append(samplePixelColor(context: context, x: x, y: y, width: width, height: height))
     }
     
-    return NSColor(srgbRed: rSum / count, green: gSum / count, blue: bSum / count, alpha: aSum / count)
+    var maxClusterCount = 0
+    var dominantColor = samples[0]
+    
+    for c1 in samples {
+        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+        c1.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
+        var clusterCount = 0
+        
+        for c2 in samples {
+            var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+            c2.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+            let dist = abs(r1 - r2) + abs(g1 - g2) + abs(b1 - b2)
+            if dist < 0.20 {
+                clusterCount += 1
+            }
+        }
+        
+        if clusterCount > maxClusterCount {
+            maxClusterCount = clusterCount
+            dominantColor = c1
+        }
+    }
+    
+    return dominantColor
 }
 
 struct MatchRegion {
@@ -277,6 +289,7 @@ struct MatchRegion {
     let type: String
     let rect: CGRect
     let bgColor: NSColor
+    let isHeaderTitle: Bool
 }
 
 let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
@@ -310,9 +323,12 @@ let request = VNRecognizeTextRequest { request, error in
                 }
                 if isDuplicate { continue }
 
+                // Detect large detail header title (top right pane in Drifter UI)
+                let isHeaderTitle = (lineH > 22.0 || (t.type == "ipv4" && lineH > 18.0 && x > CGFloat(width) * 0.4))
+
                 let bg = sampleBackgroundColor(context: context, rect: r, width: width, height: height)
                 matchedRects.append(r)
-                matchRegions.append(MatchRegion(original: t.original, replacement: t.replacement, type: t.type, rect: r, bgColor: bg))
+                matchRegions.append(MatchRegion(original: t.original, replacement: t.replacement, type: t.type, rect: r, bgColor: bg, isHeaderTitle: isHeaderTitle))
             }
         }
     }
@@ -321,10 +337,10 @@ let request = VNRecognizeTextRequest { request, error in
     let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
     NSGraphicsContext.current = nsContext
 
-    // PASS 1: Erase ALL original target bounding boxes first
+    // PASS 1: Cleanly erase original target bounding boxes using dominant background cluster
     for region in matchRegions {
         region.bgColor.setFill()
-        let eraseRect = CGRect(x: region.rect.minX, y: region.rect.minY, width: region.rect.width, height: region.rect.height)
+        let eraseRect = CGRect(x: region.rect.minX - 1, y: region.rect.minY - 1, width: region.rect.width + 2, height: region.rect.height + 2)
         NSBezierPath.fill(eraseRect)
 
         if mode == "blur" {
@@ -336,32 +352,36 @@ let request = VNRecognizeTextRequest { request, error in
         }
     }
 
-    // PASS 2: Draw ALL synthetic replacement text cleanly over erased canvas
+    // PASS 2: Render synthetic replacement text using UNIFORM TYPOGRAPHY & NO FONT SIZE FLICKER
     if mode == "synthetic" {
         for region in matchRegions {
             let r = region.rect
             var bgR: CGFloat = 0, bgG: CGFloat = 0, bgB: CGFloat = 0, bgA: CGFloat = 0
             region.bgColor.getRed(&bgR, green: &bgG, blue: &bgB, alpha: &bgA)
             let bgBrightness = (bgR * 0.299 + bgG * 0.587 + bgB * 0.114)
+            let isBlueBg = (bgR < 0.15 && bgB > 0.55)
 
-            var textColor: NSColor
-            var fontWeight: NSFont.Weight = .regular
+            var fontSize: CGFloat = 13.0
+            var fontWeight: NSFont.Weight = .semibold
+            var textColor: NSColor = .white
 
-            if region.type == "hostname" {
+            if region.isHeaderTitle {
+                fontSize = 18.0
                 fontWeight = .bold
+                textColor = .white
+            } else if region.type == "hostname" {
+                fontSize = 13.0
+                fontWeight = .semibold
+                textColor = bgBrightness > 0.6 ? .black : .white
+            } else if region.type == "ipv4" {
+                fontSize = 11.0
+                fontWeight = .regular
+                textColor = isBlueBg ? .white : (bgBrightness > 0.6 ? NSColor(srgbRed: 0.35, green: 0.35, blue: 0.37, alpha: 1.0) : NSColor(srgbRed: 0.68, green: 0.68, blue: 0.72, alpha: 1.0))
             } else if region.type == "mac" || region.type == "token" {
+                fontSize = 13.0
                 fontWeight = .medium
+                textColor = bgBrightness > 0.6 ? .black : NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1.0)
             }
-
-            if bgBrightness > 0.5 {
-                textColor = (region.type == "ipv4") ? NSColor(srgbRed: 0.35, green: 0.35, blue: 0.37, alpha: 1.0) : NSColor.black
-            } else if bgR < 0.1 && bgB > 0.5 {
-                textColor = NSColor.white
-            } else {
-                textColor = (region.type == "ipv4") ? NSColor(srgbRed: 0.75, green: 0.75, blue: 0.77, alpha: 1.0) : NSColor.white
-            }
-
-            var fontSize: CGFloat = (region.type == "ipv4") ? 11.0 : (region.type == "hostname" ? 13.0 : 12.0)
 
             var font = NSFont.systemFont(ofSize: fontSize, weight: fontWeight)
             var attributes: [NSAttributedString.Key: Any] = [
@@ -371,12 +391,14 @@ let request = VNRecognizeTextRequest { request, error in
             var attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
             var strSize = attrStr.size()
 
-            while (strSize.height > r.height || strSize.width > r.width + 12.0) && fontSize > 8.0 {
-                fontSize -= 0.5
-                font = NSFont.systemFont(ofSize: fontSize, weight: fontWeight)
-                attributes[.font] = font
-                attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
-                strSize = attrStr.size()
+            if !region.isHeaderTitle {
+                while strSize.width > r.width + 30.0 && fontSize > 9.0 {
+                    fontSize -= 0.5
+                    font = NSFont.systemFont(ofSize: fontSize, weight: fontWeight)
+                    attributes[.font] = font
+                    attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
+                    strSize = attrStr.size()
+                }
             }
 
             let textY = r.minY + (r.height - strSize.height) / 2.0
