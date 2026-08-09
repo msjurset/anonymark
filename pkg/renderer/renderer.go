@@ -385,11 +385,16 @@ let request = VNRecognizeTextRequest { request, error in
         let xRatio = r.minX / CGFloat(width)
         let yRatio = r.minY / CGFloat(height)
 
-        var category: LayoutCategory = .listPrimary
+        let isLine1 = m.isStandaloneTitle || t.type == "hostname" || rawMatches.contains { other in
+            let dy = m.rect.minY - other.rect.minY
+            let dx = abs(m.rect.minX - other.rect.minX)
+            return dy > 18.0 && dy < 45.0 && dx < 60.0
+        }
 
+        var category: LayoutCategory = .listPrimary
         if xRatio > 0.45 && yRatio > 0.80 {
             category = .headerTitle
-        } else if t.type == "hostname" || (m.isStandaloneTitle && t.type != "ipv4" && t.type != "mac" && t.type != "token") {
+        } else if isLine1 {
             category = .listPrimary
         } else {
             category = .listSecondary
@@ -399,28 +404,30 @@ let request = VNRecognizeTextRequest { request, error in
         matchRegions.append(MatchRegion(original: t.original, replacement: t.replacement, type: t.type, rect: r, lineY: m.lineY, lineH: m.lineH, bgColor: bg, category: category))
     }
 
-    // CLUSTER UNIFICATION: Compute median line heights and dominant left X-margins per layout category
+    // CLUSTER UNIFICATION: Compute median line heights and unified main list left X-margin
     // This guarantees that all list items (e.g. device names) get identical font sizes and align vertically
     var categoryLineHeights: [LayoutCategory: [CGFloat]] = [:]
-    var categoryLeftX: [LayoutCategory: [CGFloat]] = [:]
+    var allListLeftX: [CGFloat] = []
 
     for m in matchRegions {
         categoryLineHeights[m.category, default: []].append(m.lineH)
-        categoryLeftX[m.category, default: []].append(m.rect.minX)
+        if m.category == .listPrimary || m.category == .listSecondary {
+            allListLeftX.append(m.rect.minX)
+        }
     }
 
     var medianLineHeights: [LayoutCategory: CGFloat] = [:]
-    var medianLeftX: [LayoutCategory: CGFloat] = [:]
+    var unifiedListX: CGFloat? = nil
 
     for (cat, heights) in categoryLineHeights {
         let sortedH = heights.sorted()
         let midH = sortedH.count / 2
         medianLineHeights[cat] = sortedH.count %% 2 == 0 ? (sortedH[midH - 1] + sortedH[midH]) / 2.0 : sortedH[midH]
     }
-    for (cat, xs) in categoryLeftX {
-        let sortedX = xs.sorted()
+    if !allListLeftX.isEmpty {
+        let sortedX = allListLeftX.sorted()
         let midX = sortedX.count / 2
-        medianLeftX[cat] = sortedX.count %% 2 == 0 ? (sortedX[midX - 1] + sortedX[midX]) / 2.0 : sortedX[midX]
+        unifiedListX = sortedX.count %% 2 == 0 ? (sortedX[midX - 1] + sortedX[midX]) / 2.0 : sortedX[midX]
     }
 
     NSGraphicsContext.saveGraphicsState()
@@ -488,9 +495,10 @@ let request = VNRecognizeTextRequest { request, error in
             let fontSizeFromLineH = effectiveLineH * fontScaleMultiplier
             let scaledFontSize = max(11.0, fontSizeFromLineH)
 
-            // Snap left X position to category median left margin if within 20px (guarantees perfect vertical bullet alignment)
+            // Snap left X position to unified main list column margin if within 25px (guarantees perfect vertical bullet alignment across both lines)
             var drawX = r.minX
-            if let targetX = medianLeftX[region.category], abs(r.minX - targetX) < 20.0 {
+            if (region.category == .listPrimary || region.category == .listSecondary),
+               let targetX = unifiedListX, abs(r.minX - targetX) < 25.0 {
                 drawX = targetX
             }
 
