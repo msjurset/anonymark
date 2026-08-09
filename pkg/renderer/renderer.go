@@ -502,10 +502,12 @@ let request = VNRecognizeTextRequest { request, error in
                 textColor = bgBrightness > 0.6 ? .black : NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1.0)
             }
 
-            // Derive UNIFORM font size from category median line height (Line 1 primary title > Line 2 secondary IP detail)
-            var fontScaleMultiplier: CGFloat = 0.86
+            // Derive UNIFORM font size from category median line height compensating for Vision OCR cap-height bounds
+            var fontScaleMultiplier: CGFloat = 1.12
             if region.category == .listSecondary {
-                fontScaleMultiplier = 0.82
+                fontScaleMultiplier = 1.08
+            } else if region.category == .headerTitle {
+                fontScaleMultiplier = 1.15
             }
 
             let effectiveLineH = medianLineHeights[region.category] ?? region.lineH
