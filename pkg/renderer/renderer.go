@@ -454,7 +454,9 @@ let request = VNRecognizeTextRequest { request, error in
                 textColor = bgBrightness > 0.6 ? .black : NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1.0)
             }
 
-            let scaledFontSize = baseFontSize * scaleFactor
+            // Derive font size directly from measured line height (lineH * 0.72) so synthetic text matches original bounding box exactly
+            let fontSizeFromLineH = region.lineH * 0.72
+            let scaledFontSize = max(10.0, fontSizeFromLineH)
             let font = NSFont.systemFont(ofSize: scaledFontSize, weight: fontWeight)
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: font,
