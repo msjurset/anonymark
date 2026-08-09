@@ -389,7 +389,7 @@ let request = VNRecognizeTextRequest { request, error in
 
         if xRatio > 0.45 && yRatio > 0.80 {
             category = .headerTitle
-        } else if m.isStandaloneTitle {
+        } else if t.type == "hostname" || (m.isStandaloneTitle && t.type != "ipv4" && t.type != "mac" && t.type != "token") {
             category = .listPrimary
         } else {
             category = .listSecondary
@@ -478,9 +478,14 @@ let request = VNRecognizeTextRequest { request, error in
                 textColor = bgBrightness > 0.6 ? .black : NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1.0)
             }
 
-            // Derive UNIFORM font size from category median line height (0.86x multiplier) so font point size matches original text height exactly
+            // Derive UNIFORM font size from category median line height (Line 1 primary title > Line 2 secondary IP detail)
+            var fontScaleMultiplier: CGFloat = 0.86
+            if region.category == .listSecondary {
+                fontScaleMultiplier = 0.82
+            }
+
             let effectiveLineH = medianLineHeights[region.category] ?? region.lineH
-            let fontSizeFromLineH = effectiveLineH * 0.86
+            let fontSizeFromLineH = effectiveLineH * fontScaleMultiplier
             let scaledFontSize = max(11.0, fontSizeFromLineH)
 
             // Snap left X position to category median left margin if within 20px (guarantees perfect vertical bullet alignment)
