@@ -269,6 +269,7 @@ func (d *Detector) anonymizeHostname(orig string) string {
 	hash := sha256.Sum256([]byte(orig))
 	hashNum := int(hash[0]) % 90 + 10
 	repl := fmt.Sprintf("%s%d.%s", prefix, hashNum, suffix)
+	repl = fitLength(repl, len(orig))
 	d.mapping[orig] = repl
 	return repl
 }
@@ -277,7 +278,7 @@ func (d *Detector) anonymizeUser(orig string) string {
 	if repl, exists := d.mapping[orig]; exists {
 		return repl
 	}
-	repl := "developer"
+	repl := fitLength("developer", len(orig))
 	d.mapping[orig] = repl
 	return repl
 }
@@ -286,7 +287,7 @@ func (d *Detector) anonymizeEmail(orig string) string {
 	if repl, exists := d.mapping[orig]; exists {
 		return repl
 	}
-	repl := "user@example.com"
+	repl := fitLength("user@example.com", len(orig))
 	d.mapping[orig] = repl
 	return repl
 }
@@ -301,7 +302,35 @@ func (d *Detector) anonymizeToken(orig string) string {
 	} else if strings.HasPrefix(orig, "sk-") {
 		prefix = "sk-"
 	}
-	repl := prefix + strings.Repeat("x", len(orig)-len(prefix))
+	repl := prefix + strings.Repeat("x", max(1, len(orig)-len(prefix)))
 	d.mapping[orig] = repl
 	return repl
+}
+
+func fitLength(s string, targetLen int) string {
+	if len(s) == targetLen || targetLen <= 0 {
+		return s
+	}
+	if len(s) > targetLen {
+		if idx := strings.LastIndex(s, "."); idx > 0 && targetLen > len(s)-idx {
+			name := s[:idx]
+			ext := s[idx:]
+			maxNameLen := targetLen - len(ext)
+			if maxNameLen > 0 {
+				return name[:maxNameLen] + ext
+			}
+		}
+		return s[:targetLen]
+	}
+	idx := strings.LastIndex(s, ".")
+	if idx == -1 {
+		padNeeded := targetLen - len(s)
+		padStr := strings.Repeat("-node", padNeeded/5+1)
+		return s + padStr[:padNeeded]
+	}
+	name := s[:idx]
+	ext := s[idx:]
+	padNeeded := targetLen - len(s)
+	padStr := strings.Repeat("-net", padNeeded/4+1)
+	return name + padStr[:padNeeded] + ext
 }

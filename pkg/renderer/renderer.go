@@ -454,13 +454,30 @@ let request = VNRecognizeTextRequest { request, error in
                 textColor = bgBrightness > 0.6 ? .black : NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1.0)
             }
 
-            // Derive font size directly from measured line height (lineH * 0.72) so synthetic text matches original bounding box exactly
-            let fontSizeFromLineH = region.lineH * 0.72
-            let scaledFontSize = max(10.0, fontSizeFromLineH)
+            // Derive font size directly from measured line height (lineH * 0.78) so font height matches original text
+            let fontSizeFromLineH = region.lineH * 0.78
+            let scaledFontSize = max(11.0, fontSizeFromLineH)
             let font = NSFont.systemFont(ofSize: scaledFontSize, weight: fontWeight)
+
+            // Measure unkerned width
+            let unkernedAttr = NSAttributedString(string: region.replacement, attributes: [.font: font])
+            let naturalWidth = unkernedAttr.size().width
+            let targetWidth = region.rect.width
+
+            // Compute exact letter-spacing (kern) so replacement string spans targetWidth exactly
+            var kernValue: CGFloat = 0.0
+            if region.replacement.count > 1 && abs(targetWidth - naturalWidth) > 0.5 {
+                let charCount = CGFloat(region.replacement.count - 1)
+                let diff = targetWidth - naturalWidth
+                let calcKern = diff / charCount
+                let maxKern = scaledFontSize * 0.30
+                kernValue = max(-maxKern, min(maxKern, calcKern))
+            }
+
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: font,
-                .foregroundColor: textColor
+                .foregroundColor: textColor,
+                .kern: kernValue as NSNumber
             ]
             let attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
             let strSize = attrStr.size()
