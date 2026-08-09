@@ -502,12 +502,16 @@ let request = VNRecognizeTextRequest { request, error in
                 textColor = bgBrightness > 0.6 ? .black : NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1.0)
             }
 
-            // Derive UNIFORM font size from category median line height compensating for Vision OCR cap-height bounds
-            var fontScaleMultiplier: CGFloat = 1.12
-            if region.category == .listSecondary {
-                fontScaleMultiplier = 1.08
+            let isMonospaced = region.type == "ipv4" || region.type == "mac" || region.type == "token"
+
+            // Font scaling: monospaced SF Mono uses 0.82 multiplier to avoid pill collisions; proportional SF Pro uses 0.92 (primary) / 0.84 (secondary)
+            var fontScaleMultiplier: CGFloat = 0.92
+            if isMonospaced {
+                fontScaleMultiplier = 0.82
+            } else if region.category == .listSecondary {
+                fontScaleMultiplier = 0.84
             } else if region.category == .headerTitle {
-                fontScaleMultiplier = 1.15
+                fontScaleMultiplier = 0.96
             }
 
             let effectiveLineH = medianLineHeights[region.category] ?? region.lineH
@@ -523,7 +527,7 @@ let request = VNRecognizeTextRequest { request, error in
 
             // Font selection: monospaced SF Mono for IPs/MACs/tokens; proportional SF Pro for UI names/labels
             var font: NSFont
-            if region.type == "ipv4" || region.type == "mac" || region.type == "token" {
+            if isMonospaced {
                 font = NSFont.monospacedSystemFont(ofSize: scaledFontSize, weight: fontWeight)
             } else {
                 font = NSFont.systemFont(ofSize: scaledFontSize, weight: fontWeight)
