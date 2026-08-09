@@ -557,7 +557,7 @@ let request = VNRecognizeTextRequest { request, error in
 
             // Exact font baseline alignment in pixel space with snapped X column margin
             var textY = region.lineY + (region.lineH - strSize.height) / 2.0
-            if isMonospaced && region.category == .listSecondary {
+            if region.category == .listSecondary {
                 textY += 2.5
             }
             let drawPoint = CGPoint(x: drawX, y: textY)
