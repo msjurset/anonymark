@@ -454,24 +454,30 @@ let request = VNRecognizeTextRequest { request, error in
                 textColor = bgBrightness > 0.6 ? .black : NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1.0)
             }
 
-            // Derive font size directly from measured line height (lineH * 0.78) so font height matches original text
-            let fontSizeFromLineH = region.lineH * 0.78
+            // Derive font size directly from measured line height (lineH * 0.80) so font height matches original text
+            let fontSizeFromLineH = region.lineH * 0.80
             let scaledFontSize = max(11.0, fontSizeFromLineH)
-            let font = NSFont.systemFont(ofSize: scaledFontSize, weight: fontWeight)
+
+            // Font selection: monospaced SF Mono for IPs/MACs/tokens; proportional SF Pro for UI names/labels
+            var font: NSFont
+            if region.type == "ipv4" || region.type == "mac" || region.type == "token" {
+                font = NSFont.monospacedSystemFont(ofSize: scaledFontSize, weight: fontWeight)
+            } else {
+                font = NSFont.systemFont(ofSize: scaledFontSize, weight: fontWeight)
+            }
 
             // Measure unkerned width
             let unkernedAttr = NSAttributedString(string: region.replacement, attributes: [.font: font])
             let naturalWidth = unkernedAttr.size().width
             let targetWidth = region.rect.width
 
-            // Compute exact letter-spacing (kern) so replacement string spans targetWidth exactly
+            // Compute subtle letter-spacing (kern) clamped to [-0.4pt, +0.4pt] to preserve natural proportional typography
             var kernValue: CGFloat = 0.0
             if region.replacement.count > 1 && abs(targetWidth - naturalWidth) > 0.5 {
                 let charCount = CGFloat(region.replacement.count - 1)
                 let diff = targetWidth - naturalWidth
                 let calcKern = diff / charCount
-                let maxKern = scaledFontSize * 0.30
-                kernValue = max(-maxKern, min(maxKern, calcKern))
+                kernValue = max(-0.4, min(0.4, calcKern))
             }
 
             let attributes: [NSAttributedString.Key: Any] = [

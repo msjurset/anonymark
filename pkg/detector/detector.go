@@ -322,15 +322,29 @@ func fitLength(s string, targetLen int) string {
 		}
 		return s[:targetLen]
 	}
+
 	idx := strings.LastIndex(s, ".")
-	if idx == -1 {
-		padNeeded := targetLen - len(s)
-		padStr := strings.Repeat("-node", padNeeded/5+1)
-		return s + padStr[:padNeeded]
+	name := s
+	ext := ""
+	if idx > 0 {
+		name = s[:idx]
+		ext = s[idx:]
 	}
-	name := s[:idx]
-	ext := s[idx:]
-	padNeeded := targetLen - len(s)
-	padStr := strings.Repeat("-net", padNeeded/4+1)
-	return name + padStr[:padNeeded] + ext
+
+	wordPool := []string{"-primary", "-gateway", "-router", "-storage", "-control", "-backup", "-server", "-switch", "-access", "-station"}
+	buf := name
+	wIdx := 0
+
+	for len(buf)+len(ext) < targetLen {
+		w := wordPool[wIdx%len(wordPool)]
+		wIdx++
+		needed := targetLen - len(buf) - len(ext)
+		if len(w) <= needed {
+			buf += w
+		} else {
+			buf += w[:needed]
+		}
+	}
+
+	return buf + ext
 }
