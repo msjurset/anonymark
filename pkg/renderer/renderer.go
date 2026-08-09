@@ -395,17 +395,23 @@ let request = VNRecognizeTextRequest { request, error in
             return dy > 18.0 && dy < 45.0 && dx < 60.0 && otherIsIP
         }
 
+        // Check if target is inline inside a sentence (preceded horizontally on the same line)
+        let isInlineInSentence = rawMatches.contains { other in
+            let dy = abs(m.rect.minY - other.rect.minY)
+            let dx = m.rect.minX - other.rect.minX
+            return dy < 10.0 && dx > 20.0
+        } || r.minX > 220.0
+
         let isBelowTitleLine = rawMatches.contains { other in
             let dy = other.rect.minY - m.rect.minY
-            let dx = abs(m.rect.minX - other.rect.minX)
             let otherIsTitle = other.target.type == "hostname" || (other.isStandaloneTitle && !other.target.original.contains("192.168") && !other.target.original.contains("10.0."))
-            return dy > 18.0 && dy < 45.0 && dx < 60.0 && otherIsTitle
+            return dy > 18.0 && dy < 45.0 && otherIsTitle
         }
 
         var category: LayoutCategory = .listPrimary
         if xRatio > 0.45 && yRatio > 0.80 {
             category = .headerTitle
-        } else if isBelowTitleLine || (isIPOrDetail && !hasDetailLineBelow) {
+        } else if isBelowTitleLine || isInlineInSentence || (isIPOrDetail && !hasDetailLineBelow) {
             category = .listSecondary
         } else {
             category = .listPrimary
