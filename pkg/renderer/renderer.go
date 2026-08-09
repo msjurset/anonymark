@@ -428,7 +428,7 @@ let request = VNRecognizeTextRequest { request, error in
 
     for m in matchRegions {
         categoryLineHeights[m.category, default: []].append(m.lineH)
-        if m.category == .listPrimary || m.category == .listSecondary {
+        if m.category == .listPrimary {
             allListLeftX.append(m.rect.minX)
         }
     }
@@ -556,7 +556,10 @@ let request = VNRecognizeTextRequest { request, error in
             let strSize = attrStr.size()
 
             // Exact font baseline alignment in pixel space with snapped X column margin
-            let textY = region.lineY + (region.lineH - strSize.height) / 2.0
+            var textY = region.lineY + (region.lineH - strSize.height) / 2.0
+            if isMonospaced && region.category == .listSecondary {
+                textY += 2.5
+            }
             let drawPoint = CGPoint(x: drawX, y: textY)
             attrStr.draw(at: drawPoint)
         }
