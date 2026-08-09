@@ -399,6 +399,30 @@ let request = VNRecognizeTextRequest { request, error in
         matchRegions.append(MatchRegion(original: t.original, replacement: t.replacement, type: t.type, rect: r, lineY: m.lineY, lineH: m.lineH, bgColor: bg, category: category))
     }
 
+    // CLUSTER UNIFICATION: Compute median line heights and dominant left X-margins per layout category
+    // This guarantees that all list items (e.g. device names) get identical font sizes and align vertically
+    var categoryLineHeights: [LayoutCategory: [CGFloat]] = [:]
+    var categoryLeftX: [LayoutCategory: [CGFloat]] = [:]
+
+    for m in matchRegions {
+        categoryLineHeights[m.category, default: []].append(m.lineH)
+        categoryLeftX[m.category, default: []].append(m.rect.minX)
+    }
+
+    var medianLineHeights: [LayoutCategory: CGFloat] = [:]
+    var medianLeftX: [LayoutCategory: CGFloat] = [:]
+
+    for (cat, heights) in categoryLineHeights {
+        let sortedH = heights.sorted()
+        let midH = sortedH.count / 2
+        medianLineHeights[cat] = sortedH.count %% 2 == 0 ? (sortedH[midH - 1] + sortedH[midH]) / 2.0 : sortedH[midH]
+    }
+    for (cat, xs) in categoryLeftX {
+        let sortedX = xs.sorted()
+        let midX = sortedX.count / 2
+        medianLeftX[cat] = sortedX.count %% 2 == 0 ? (sortedX[midX - 1] + sortedX[midX]) / 2.0 : sortedX[midX]
+    }
+
     NSGraphicsContext.saveGraphicsState()
     let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
     NSGraphicsContext.current = nsContext
@@ -418,7 +442,7 @@ let request = VNRecognizeTextRequest { request, error in
         }
     }
 
-    // PASS 2: Render synthetic replacement text using EXACT SYSTEM TYPOGRAPHY scaled for Retina canvas
+    // PASS 2: Render synthetic replacement text using EXACT UNIFORM TYPOGRAPHY & VERTICAL ALIGNMENT
     if mode == "synthetic" {
         for region in matchRegions {
             let r = region.rect
@@ -454,9 +478,16 @@ let request = VNRecognizeTextRequest { request, error in
                 textColor = bgBrightness > 0.6 ? .black : NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1.0)
             }
 
-            // Derive font size directly from measured line height (lineH * 0.80) so font height matches original text
-            let fontSizeFromLineH = region.lineH * 0.80
+            // Derive UNIFORM font size from category median line height to ensure zero font size variance across list items
+            let effectiveLineH = medianLineHeights[region.category] ?? region.lineH
+            let fontSizeFromLineH = effectiveLineH * 0.76
             let scaledFontSize = max(11.0, fontSizeFromLineH)
+
+            // Snap left X position to category median left margin if within 20px (guarantees perfect vertical bullet alignment)
+            var drawX = r.minX
+            if let targetX = medianLeftX[region.category], abs(r.minX - targetX) < 20.0 {
+                drawX = targetX
+            }
 
             // Font selection: monospaced SF Mono for IPs/MACs/tokens; proportional SF Pro for UI names/labels
             var font: NSFont
@@ -488,9 +519,9 @@ let request = VNRecognizeTextRequest { request, error in
             let attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
             let strSize = attrStr.size()
 
-            // Exact font baseline alignment in pixel space
+            // Exact font baseline alignment in pixel space with snapped X column margin
             let textY = region.lineY + (region.lineH - strSize.height) / 2.0
-            let drawPoint = CGPoint(x: r.minX, y: textY)
+            let drawPoint = CGPoint(x: drawX, y: textY)
             attrStr.draw(at: drawPoint)
         }
     }

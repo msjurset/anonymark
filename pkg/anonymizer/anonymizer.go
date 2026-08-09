@@ -10,15 +10,17 @@ import (
 
 // Anonymizer manages image anonymization workflows.
 type Anonymizer struct {
-	Detector *detector.Detector
-	Renderer *renderer.AppKitRenderer
+	Detector    *detector.Detector
+	Renderer    *renderer.AppKitRenderer
+	Proofreader *Proofreader
 }
 
 // NewAnonymizer creates an Anonymizer instance.
 func NewAnonymizer() *Anonymizer {
 	return &Anonymizer{
-		Detector: detector.NewDetector(),
-		Renderer: renderer.NewRenderer(),
+		Detector:    detector.NewDetector(),
+		Renderer:    renderer.NewRenderer(),
+		Proofreader: NewProofreader(),
 	}
 }
 
@@ -45,6 +47,11 @@ func (a *Anonymizer) ProcessImageFile(inputPath, outputPath string, mode rendere
 				})
 			}
 		}
+	}
+
+	// Audit layout and typography consistency before rendering
+	if a.Proofreader != nil {
+		_ = a.Proofreader.AuditLayout(targets)
 	}
 
 	return a.Renderer.RenderNativeRedactions(inputPath, outputPath, targets, mode)
