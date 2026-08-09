@@ -385,7 +385,8 @@ let request = VNRecognizeTextRequest { request, error in
         let xRatio = r.minX / CGFloat(width)
         let yRatio = r.minY / CGFloat(height)
 
-        let isLine1 = m.isStandaloneTitle || t.type == "hostname" || rawMatches.contains { other in
+        // Pure spatial layout classification: determine primary title line vs secondary line based on spatial geometry
+        let isLine1 = m.isStandaloneTitle || rawMatches.contains { other in
             let dy = m.rect.minY - other.rect.minY
             let dx = abs(m.rect.minX - other.rect.minX)
             return dy > 18.0 && dy < 45.0 && dx < 60.0
