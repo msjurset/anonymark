@@ -19,16 +19,33 @@ func TestProofreaderAuditLayout(t *testing.T) {
 	}
 }
 
-func TestProofreaderAuditOutput(t *testing.T) {
+func TestProofreaderAuditRenderedRegions(t *testing.T) {
 	p := NewProofreader()
-	fontSizes := []float64{16.0, 16.0, 16.0, 16.0}
-	xMargins := []float64{100.0, 100.0, 100.0, 100.0}
-
-	report := p.AuditOutput(fontSizes, xMargins)
-	if !report.Passed {
-		t.Errorf("Expected AuditOutput to pass for uniform font sizes, got: %v", report.Feedback)
+	records := []RegionAuditRecord{
+		{OriginalText: "node-34.lan", Replacement: "node-56.lan", TargetWidth: 100.0, RenderedWidth: 100.0, LineHeight: 26.0, FontSizePt: 20.0, WidthCoverage: 1.0},
+		{OriginalText: "10.0.109.185", Replacement: "10.0.104.128", TargetWidth: 120.0, RenderedWidth: 119.5, LineHeight: 26.0, FontSizePt: 20.0, WidthCoverage: 0.995},
 	}
-	if report.FontVariancePt != 0.0 {
-		t.Errorf("Expected 0.0 font variance, got %f", report.FontVariancePt)
+
+	report := p.AuditRenderedRegions(records)
+	if !report.Passed {
+		t.Errorf("Expected AuditRenderedRegions to pass for uniform coverage, got: %v", report.Feedback)
+	}
+	if report.DefectCount != 0 {
+		t.Errorf("Expected 0 defects, got %d", report.DefectCount)
+	}
+}
+
+func TestProofreaderAuditRenderedRegionsDefect(t *testing.T) {
+	p := NewProofreader()
+	records := []RegionAuditRecord{
+		{OriginalText: "node-34.lan", Replacement: "node-56.lan", TargetWidth: 150.0, RenderedWidth: 100.0, LineHeight: 26.0, FontSizePt: 15.0, WidthCoverage: 0.666},
+	}
+
+	report := p.AuditRenderedRegions(records)
+	if report.Passed {
+		t.Errorf("Expected AuditRenderedRegions to fail for width gap defect, but passed")
+	}
+	if report.DefectCount != 1 {
+		t.Errorf("Expected 1 defect, got %d", report.DefectCount)
 	}
 }

@@ -478,9 +478,9 @@ let request = VNRecognizeTextRequest { request, error in
                 textColor = bgBrightness > 0.6 ? .black : NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1.0)
             }
 
-            // Derive UNIFORM font size from category median line height to ensure zero font size variance across list items
+            // Derive UNIFORM font size from category median line height (0.86x multiplier) so font point size matches original text height exactly
             let effectiveLineH = medianLineHeights[region.category] ?? region.lineH
-            let fontSizeFromLineH = effectiveLineH * 0.76
+            let fontSizeFromLineH = effectiveLineH * 0.86
             let scaledFontSize = max(11.0, fontSizeFromLineH)
 
             // Snap left X position to category median left margin if within 20px (guarantees perfect vertical bullet alignment)
@@ -502,13 +502,13 @@ let request = VNRecognizeTextRequest { request, error in
             let naturalWidth = unkernedAttr.size().width
             let targetWidth = region.rect.width
 
-            // Compute subtle letter-spacing (kern) clamped to [-0.4pt, +0.4pt] to preserve natural proportional typography
+            // Compute subtle letter-spacing (kern) clamped to [-0.8pt, +0.8pt] to match original bounding box length exactly
             var kernValue: CGFloat = 0.0
             if region.replacement.count > 1 && abs(targetWidth - naturalWidth) > 0.5 {
                 let charCount = CGFloat(region.replacement.count - 1)
                 let diff = targetWidth - naturalWidth
                 let calcKern = diff / charCount
-                kernValue = max(-0.4, min(0.4, calcKern))
+                kernValue = max(-0.8, min(0.8, calcKern))
             }
 
             let attributes: [NSAttributedString.Key: Any] = [
