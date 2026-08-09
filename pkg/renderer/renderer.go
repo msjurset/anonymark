@@ -385,20 +385,30 @@ let request = VNRecognizeTextRequest { request, error in
         let xRatio = r.minX / CGFloat(width)
         let yRatio = r.minY / CGFloat(height)
 
-        // Pure spatial layout classification: determine primary title line vs secondary line based on spatial geometry
-        let isLine1 = m.isStandaloneTitle || rawMatches.contains { other in
+        // Precision layout classification: Line 1 (Primary Title) vs Line 2 (Secondary Subtitle)
+        let isIPOrDetail = t.type == "ipv4" || t.type == "mac" || t.type == "token" || t.original.contains("192.168") || t.original.contains("10.0.")
+
+        let hasDetailLineBelow = rawMatches.contains { other in
             let dy = m.rect.minY - other.rect.minY
             let dx = abs(m.rect.minX - other.rect.minX)
-            return dy > 18.0 && dy < 45.0 && dx < 60.0
+            let otherIsIP = other.target.type == "ipv4" || other.target.type == "mac" || other.target.type == "token" || other.target.original.contains("192.168") || other.target.original.contains("10.0.")
+            return dy > 18.0 && dy < 45.0 && dx < 60.0 && otherIsIP
+        }
+
+        let isBelowTitleLine = rawMatches.contains { other in
+            let dy = other.rect.minY - m.rect.minY
+            let dx = abs(m.rect.minX - other.rect.minX)
+            let otherIsTitle = other.target.type == "hostname" || (other.isStandaloneTitle && !other.target.original.contains("192.168") && !other.target.original.contains("10.0."))
+            return dy > 18.0 && dy < 45.0 && dx < 60.0 && otherIsTitle
         }
 
         var category: LayoutCategory = .listPrimary
         if xRatio > 0.45 && yRatio > 0.80 {
             category = .headerTitle
-        } else if isLine1 {
-            category = .listPrimary
-        } else {
+        } else if isBelowTitleLine || (isIPOrDetail && !hasDetailLineBelow) {
             category = .listSecondary
+        } else {
+            category = .listPrimary
         }
 
         let bg = sampleBackgroundColor(context: context, rect: r, width: width, height: height)
@@ -496,10 +506,10 @@ let request = VNRecognizeTextRequest { request, error in
             let fontSizeFromLineH = effectiveLineH * fontScaleMultiplier
             let scaledFontSize = max(11.0, fontSizeFromLineH)
 
-            // Snap left X position to unified main list column margin if within 25px (guarantees perfect vertical bullet alignment across both lines)
+            // Snap left X position to unified main list column margin if within 40px (guarantees perfect vertical bullet alignment across all items)
             var drawX = r.minX
             if (region.category == .listPrimary || region.category == .listSecondary),
-               let targetX = unifiedListX, abs(r.minX - targetX) < 25.0 {
+               let targetX = unifiedListX, abs(r.minX - targetX) < 40.0 {
                 drawX = targetX
             }
 
