@@ -405,7 +405,7 @@ func measureInkMetrics(context: CGContext, rect: CGRect, width: Int, height: Int
 }
 
 func isTokenBoundaryChar(_ ch: Character) -> Bool {
-    return !(ch.isLetter || ch.isNumber || ch == "-" || ch == "_")
+    return !(ch.isLetter || ch.isNumber || ch == "-" || ch == "_" || ch == "." || ch == ":")
 }
 
 func hasDescenders(_ s: String) -> Bool {
@@ -542,15 +542,37 @@ let request = VNRecognizeTextRequest { request, error in
             }
         }
 
+        var cleanOriginal = originalText
+        var cleanReplaced = replacedText
+        var leadingDotOffset: CGFloat = 0.0
+        for prefix in ["• ", "· ", "* "] {
+            if cleanOriginal.hasPrefix(prefix) && cleanReplaced.hasPrefix(prefix) {
+                cleanOriginal = String(cleanOriginal.dropFirst(prefix.count))
+                cleanReplaced = String(cleanReplaced.dropFirst(prefix.count))
+                leadingDotOffset = 26.0
+                break
+            }
+        }
+
+        let adjustedObsRect = CGRect(
+            x: obsRect.origin.x + leadingDotOffset,
+            y: obsRect.origin.y,
+            width: max(8.0, obsRect.width - leadingDotOffset),
+            height: obsRect.height
+        )
+        let adjustedMetrics = leadingDotOffset > 0
+            ? measureInkMetrics(context: context, rect: adjustedObsRect, width: width, height: height)
+            : metrics
+
         edits.append(ObservationEdit(
-            originalText: originalText,
-            replacedText: replacedText,
-            obsRect: obsRect,
-            metrics: metrics,
+            originalText: cleanOriginal,
+            replacedText: cleanReplaced,
+            obsRect: adjustedObsRect,
+            metrics: adjustedMetrics,
             pointSize: estimatedPointSize,
             fontWeight: bestSpec.weight,
             isMonospaced: bestSpec.mono,
-            snappedMinX: metrics.inkMinX
+            snappedMinX: adjustedMetrics.inkMinX
         ))
     }
 
@@ -559,9 +581,9 @@ let request = VNRecognizeTextRequest { request, error in
         var colX: [CGFloat] = [edits[i].metrics.inkMinX]
         var colSizes: [CGFloat] = [edits[i].pointSize]
         for j in 0..<edits.count where i != j {
-            if abs(edits[i].metrics.inkMinX - edits[j].metrics.inkMinX) <= 8.0 {
+            if abs(edits[i].metrics.inkMinX - edits[j].metrics.inkMinX) <= 18.0 {
                 colX.append(edits[j].metrics.inkMinX)
-                if abs(edits[i].pointSize - edits[j].pointSize) <= 2.5 {
+                if abs(edits[i].pointSize - edits[j].pointSize) <= 4.0 {
                     colSizes.append(edits[j].pointSize)
                 }
             }
@@ -603,9 +625,20 @@ let request = VNRecognizeTextRequest { request, error in
     // PASS 2: Draw the complete anonymized observation line on the exact original typographic baseline using CoreText
     if mode == "synthetic" {
         for edit in edits {
-            let font: NSFont = edit.isMonospaced
-                ? NSFont.monospacedSystemFont(ofSize: edit.pointSize, weight: edit.fontWeight)
-                : NSFont.systemFont(ofSize: edit.pointSize, weight: edit.fontWeight)
+            let maxAllowedWidth = max(edit.obsRect.width, edit.metrics.inkMaxX - edit.metrics.inkMinX + 2.0)
+            var fittedPointSize = edit.pointSize
+            var font: NSFont = edit.isMonospaced
+                ? NSFont.monospacedSystemFont(ofSize: fittedPointSize, weight: edit.fontWeight)
+                : NSFont.systemFont(ofSize: fittedPointSize, weight: edit.fontWeight)
+
+            let testAttr = NSAttributedString(string: edit.replacedText, attributes: [.font: font])
+            let rawWidth = testAttr.size().width
+            if rawWidth > maxAllowedWidth && rawWidth > 0 {
+                fittedPointSize = max(9.5, fittedPointSize * (maxAllowedWidth / rawWidth))
+                font = edit.isMonospaced
+                    ? NSFont.monospacedSystemFont(ofSize: fittedPointSize, weight: edit.fontWeight)
+                    : NSFont.systemFont(ofSize: fittedPointSize, weight: edit.fontWeight)
+            }
 
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: font,

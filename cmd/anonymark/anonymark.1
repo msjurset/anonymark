@@ -1,0 +1,35 @@
+.TH ANONYMARK 1 "October 2026" "anonymark 1.2.0" "User Commands"
+.SH NAME
+anonymark \- pixel-matched screenshot anonymizer and synthetic data replacement engine
+.SH SYNOPSIS
+.B anonymark
+.I command
+.RI [ flags ]
+.SH DESCRIPTION
+.B anonymark
+is a native macOS and Go CLI utility that captures or processes application screenshots and replaces sensitive network and environment identifiers in-place. Using macOS Vision OCR, clustered perimeter background sampling, ink-height typography estimation, and CoreText baseline rendering,
+.B anonymark
+replaces private IPv4 addresses, hardware MAC addresses, internal hostnames, local filesystem user paths, email addresses, and API tokens without visual cut-out artifacts.
+.SH COMMANDS
+.TP
+.B capture
+Launch the interactive macOS screen selection overlay (\fBscreencapture -i\fR) and immediately anonymize the captured region.
+.TP
+.B process \fIinput.png\fR
+Anonymize an existing PNG or JPEG screenshot file on disk.
+.TP
+.B completion \fIzsh|bash\fR
+Generate shell completion scripts for Zsh or Bash.
+.TP
+.B version
+Display the installed version of
+.BR anonymark .
+.SH OPTIONS
+.TP
+.BI \-out " path"
+Output image file path (default: \fIanonymized.png\fR).
+.TP
+.BI \-mode " mode"
+Visual redaction style: \fBsynthetic\fR (default), \fBpill\fR, or \fBblur\fR.
+.SH AUTHOR
+Mark Sjurseth

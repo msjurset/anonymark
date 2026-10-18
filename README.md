@@ -1,31 +1,34 @@
 # anonymark
 
-**anonymark** is a native Go CLI utility for capturing and anonymizing screenshots with **pixel-perfect synthetic data replacement**. Instead of blurring or redacting sensitive data with black boxes, `anonymark` samples the text color, font size, and background style to replace private IP addresses, MAC addresses, hostnames, user paths, and tokens with realistic synthetic data.
+**anonymark** is a native Go and macOS Vision/CoreText CLI utility for capturing and anonymizing screenshots with **pixel-matched synthetic data replacement**. Instead of obscuring UI layouts with black boxes or coarse pixelation, `anonymark` samples the surrounding background color cluster, measures glyph ink height and font weight, and renders realistic synthetic replacements for private IPv4 addresses, MAC addresses, hostnames, user paths, and tokens directly on the original typographic baseline.
+
+![Anonymark Synthetic In-Place Replacement](docs/assets/synthetic_replacement.png)
+
+---
+
+## Documentation
+
+- **[User Guide & Visual Walkthrough](docs/USER_GUIDE.md)** — Architecture overview, clustered background sampling, CoreText baseline matching, and CLI reference.
+- **[Practical Cookbook & Recipes](docs/COOKBOOK.md)** — Step-by-step recipes for interactive capture, batch sanitization, compliance pill redaction, and clipboard automation.
 
 ---
 
 ## Features
 
-- **Synthetic In-Place Replacement**: Replaces IP addresses (`192.168.86.55` $\rightarrow$ `10.0.4.12`), MAC addresses (`D8:3A:DD:4C:F2:BB` $\rightarrow$ `52:54:00:12:34:56`), hostnames (`pi.hole` $\rightarrow$ `node-alpha.internal`), user paths (`/Users/...`), and tokens in-place using matching colors and geometry.
-- **Session-Level Consistency**: Deterministically maps identical sensitive values across multiple screenshots so documentation remains coherent.
-- **Interactive macOS Capture**: Launches native macOS selection overlay (`screencapture -i`) directly from terminal.
-- **Multi-Mode Support**: Supports `synthetic` (default), `blur`, and `pill` redaction styles.
-- **100% Offline & Private**: Zero external network calls or cloud dependencies.
+- **Pixel-Matched Synthetic Replacement (`-mode synthetic`)**: Replaces private IPv4 addresses, MAC addresses, `.lan`/`.local` hostnames, device names (`nas-*`, `pve-*`, `dns-*`, `iot-*`), `/Users/<name>` paths, emails, and API tokens in-place using CoreText and SF Pro / SF Mono font metrics.
+- **Clustered Perimeter Background Sampling**: Samples the 2px exterior ring around each target observation and selects the dominant color cluster so erased regions blend seamlessly into dark-mode cards and selection highlights.
+- **Column Snapping & Width Clamping**: Aligns vertically stacked list items to a shared left X coordinate and point size, and clamps replacement width so synthetic text never collides with adjacent UI badges.
+- **Session-Level Determinism**: Identical sensitive values map to identical synthetic replacements across the image.
+- **Interactive macOS Capture (`anonymark capture`)**: Launches the native macOS region selection overlay (`screencapture -i`) directly from your terminal.
+- **Multi-Mode Support**: Supports `synthetic` (default), `pill`, and `blur` redaction styles.
+- **100% Offline & Local**: Runs entirely on-device using macOS Vision and CoreText frameworks with zero external network calls.
 
 ---
 
 ## Installation & Build
 
-### Prerequisites
-- Go 1.22+ toolchain
-- macOS (for interactive `capture` command)
-
-### Build & Install
-
 ```bash
-# Clone and build binary
-git clone https://github.com/msjurset/anonymark.git
-cd anonymark
+# Build binary
 make build
 
 # Run unit test suite
@@ -37,40 +40,21 @@ sudo make install
 
 ---
 
-## Usage
+## Quick Start
 
-### Interactive Screen Capture
 ```bash
-# Capture area interactively and save anonymized image to output.png
+# Capture screen region interactively and save sanitized screenshot
 anonymark capture -out output.png
-```
 
-### Anonymize Existing Image
-```bash
-# Process an existing screenshot PNG file
+# Anonymize an existing PNG screenshot in-place
 anonymark process screenshot.png -out anonymized.png -mode synthetic
-```
 
-### Redaction Modes
-- `-mode synthetic` *(default)*: Replaces sensitive PII with realistic fake data matching background/foreground styles.
-- `-mode blur`: Applies pixelated privacy blur over sensitive regions.
-- `-mode pill`: Renders clean dark-mode redaction pills over target regions.
-
----
-
-## Shell Completions
-
-Generate shell completions for Zsh or Bash:
-```bash
-# Zsh completion
-anonymark completion zsh > ~/.zsh/completions/_anonymark
-
-# Bash completion
-anonymark completion bash > /etc/bash_completion.d/anonymark
+# Redact sensitive values with solid dark-mode pills
+anonymark process screenshot.png -out redacted.png -mode pill
 ```
 
 ---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.

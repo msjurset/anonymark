@@ -73,10 +73,10 @@ func (d *Detector) initUserTokens() {
 }
 
 var (
-	ipv4Regex       = regexp.MustCompile(`\b(?:10|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)\.(?:[0-9]{1,3})\.(?:[0-9]{1,3})\b`)
+	ipv4Regex       = regexp.MustCompile(`\b(?:10\.(?:[0-9]{1,3})|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)\.(?:[0-9]{1,3})\.(?:[0-9]{1,3})\b`)
 	macRegex        = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{1,2}[:-]){5}(?:[0-9A-Fa-f]{1,2})\b`)
 	hostnameRegex   = regexp.MustCompile(`(?i)\b[a-zA-Z0-9][a-zA-Z0-9_-]*\.(?:lan|local|internal|home|hole|domain|net|arpa|l\.\.\.|lo\.\.\.|loc\.\.\.|\.\.\.)\b`)
-	deviceHostRegex = regexp.MustCompile(`(?i)\b(?:esp32|esp|ha|home-assistant|retropie|retro|node|pi-[a-zA-Z0-9_-]+|pi[0-9]+|porkchop[a-zA-Z0-9_-]*|airport|time-capsule|[a-zA-Z0-9_-]+-(?:airport|capsule|macbook|iphone|ipad|pc|nas|router|switch|ap|node|box|device|server|voice))[a-zA-Z0-9._-]*`)
+	deviceHostRegex = regexp.MustCompile(`(?i)\b(?:esp32|esp|ha|home-assistant|retropie|retro|node|nas-[a-zA-Z0-9_-]+|pve-[a-zA-Z0-9_-]+|dns-[a-zA-Z0-9_-]+|iot-[a-zA-Z0-9_-]+|srv-[a-zA-Z0-9_-]+|pi-[a-zA-Z0-9_-]+|pi[0-9]+|porkchop[a-zA-Z0-9_-]*|airport|time-capsule|[a-zA-Z0-9_-]+-(?:airport|capsule|macbook|iphone|ipad|pc|nas|router|switch|ap|node|box|device|server|voice))[a-zA-Z0-9._-]*`)
 	userPathRegex   = regexp.MustCompile(`/Users/([a-zA-Z0-9_-]+)`)
 	emailRegex      = regexp.MustCompile(`\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b`)
 	tokenRegex      = regexp.MustCompile(`\b(?:ghp_|gho_|sk-|akip_)[a-zA-Z0-9_-]{20,}\b`)
@@ -267,8 +267,9 @@ func (d *Detector) anonymizeHostname(orig string) string {
 	cleaned := strings.TrimSuffix(orig, "...")
 	parts := strings.Split(cleaned, ".")
 	name := parts[0]
+	hasDotSuffix := len(parts) > 1
 	suffix := "lan"
-	if len(parts) > 1 {
+	if hasDotSuffix {
 		s := strings.ToLower(strings.TrimRight(parts[len(parts)-1], "."))
 		switch {
 		case s == "local" || s == "l" || strings.HasPrefix(s, "loc"):
@@ -297,20 +298,27 @@ func (d *Detector) anonymizeHostname(orig string) string {
 	case strings.Contains(lowerName, "capsule") || strings.Contains(lowerName, "airport"):
 		base = fmt.Sprintf("backup-nas-%02d", hashNum)
 	default:
-		roles := []string{"core-node", "lab-host", "edge-gw", "storage-nas", "compute-srv", " worker-node", "proxy-gw", "metrics-db"}
+		roles := []string{"core-node", "lab-host", "edge-gw", "nas-host", "srv-node", "work-node", "proxy-gw", "cache-db"}
 		role := strings.TrimSpace(roles[int(hash[1])%len(roles)])
 		base = fmt.Sprintf("%s-%02d", role, hashNum)
 	}
 
+	formatCandidate := func(b string) string {
+		if hasDotSuffix {
+			return fmt.Sprintf("%s.%s", b, suffix)
+		}
+		return b
+	}
+
 	// Expand with whole, natural hyphenated tokens (never slicing a token mid-word) if original was much longer
 	wholeMods := []string{"-primary", "-cluster", "-rack", "-gateway", "-storage"}
-	candidate := fmt.Sprintf("%s.%s", base, suffix)
+	candidate := formatCandidate(base)
 	modIdx := int(hash[2])
 	for len(candidate)+6 <= len(orig) && modIdx < int(hash[2])+len(wholeMods) {
 		mod := wholeMods[modIdx%len(wholeMods)]
 		modIdx++
-		next := fmt.Sprintf("%s%s.%s", base, mod, suffix)
-		if len(next) <= len(orig)+2 {
+		next := formatCandidate(base + mod)
+		if len(next) <= len(orig) {
 			base += mod
 			candidate = next
 		} else {
