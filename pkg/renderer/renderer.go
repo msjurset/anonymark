@@ -194,6 +194,7 @@ import Foundation
 import Vision
 import AppKit
 import CoreGraphics
+import CoreText
 
 struct TargetItem: Codable {
     let original: String
@@ -220,9 +221,6 @@ guard let image = NSImage(contentsOfFile: inputPath),
 let width = cgImage.width
 let height = cgImage.height
 
-// Calculate Retina 2x scale factor relative to standard 1x macOS point coordinates
-let scaleFactor = max(1.0, CGFloat(height) / 800.0)
-
 guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
       let context = CGContext(data: nil,
                               width: width,
@@ -237,331 +235,398 @@ guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
 
 context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-// Flips Y coordinate when indexing raw bitmap byte buffer (since CGContext memory starts at top-left)
-func samplePixelColor(context: CGContext, x: Int, y: Int, width: Int, height: Int) -> NSColor {
-    guard let dataPtr = context.data else { return NSColor.black }
+struct RGBAPixel {
+    let r: CGFloat
+    let g: CGFloat
+    let b: CGFloat
+    let a: CGFloat
+
+    func distance(to other: RGBAPixel) -> CGFloat {
+        let dr = r - other.r
+        let dg = g - other.g
+        let db = b - other.b
+        return sqrt(dr * dr + dg * dg + db * db)
+    }
+
+    var nsColor: NSColor {
+        NSColor(srgbRed: r, green: g, blue: b, alpha: a)
+    }
+}
+
+func readPixel(context: CGContext, x: Int, y: Int, width: Int, height: Int) -> RGBAPixel {
+    guard let dataPtr = context.data else {
+        return RGBAPixel(r: 0, g: 0, b: 0, a: 1)
+    }
     let pointer = dataPtr.bindMemory(to: UInt8.self, capacity: width * height * 4)
     let safeX = max(0, min(width - 1, x))
     let safeY = max(0, min(height - 1, (height - 1) - y))
     let offset = (safeY * width + safeX) * 4
-    let r = CGFloat(pointer[offset]) / 255.0
-    let g = CGFloat(pointer[offset + 1]) / 255.0
-    let b = CGFloat(pointer[offset + 2]) / 255.0
-    let a = CGFloat(pointer[offset + 3]) / 255.0
-    return NSColor(srgbRed: r, green: g, blue: b, alpha: a)
+    return RGBAPixel(
+        r: CGFloat(pointer[offset]) / 255.0,
+        g: CGFloat(pointer[offset + 1]) / 255.0,
+        b: CGFloat(pointer[offset + 2]) / 255.0,
+        a: CGFloat(pointer[offset + 3]) / 255.0
+    )
 }
 
-func sampleBackgroundColor(context: CGContext, rect: CGRect, width: Int, height: Int) -> NSColor {
-    let minX = max(0, min(width - 1, Int(rect.minX)))
-    let maxX = max(0, min(width - 1, Int(rect.maxX)))
-    let minY = max(0, min(height - 1, Int(rect.minY)))
-    let maxY = max(0, min(height - 1, Int(rect.maxY)))
+func sampleBackgroundPixel(context: CGContext, rect: CGRect, width: Int, height: Int) -> RGBAPixel {
+    let minX = max(0, min(width - 1, Int(rect.minX) - 2))
+    let maxX = max(0, min(width - 1, Int(rect.maxX) + 2))
+    let minY = max(0, min(height - 1, Int(rect.minY) - 2))
+    let maxY = max(0, min(height - 1, Int(rect.maxY) + 2))
 
-    var samples: [NSColor] = []
-    let margin = 2
-    let sMinX = max(0, minX - margin)
-    let sMaxX = min(width - 1, maxX + margin)
-    let sMinY = max(0, minY - margin)
-    let sMaxY = min(height - 1, maxY + margin)
+    var samples: [RGBAPixel] = []
+    let stepX = max(1, (maxX - minX) / 16)
+    let stepY = max(1, (maxY - minY) / 6)
 
-    let stepX = max(1, (sMaxX - sMinX) / 8)
-    let stepY = max(1, (sMaxY - sMinY) / 4)
-
-    for x in stride(from: sMinX, to: sMaxX, by: stepX) {
-        samples.append(samplePixelColor(context: context, x: x, y: sMaxY, width: width, height: height))
-        samples.append(samplePixelColor(context: context, x: x, y: sMinY, width: width, height: height))
+    for x in stride(from: minX, through: maxX, by: stepX) {
+        samples.append(readPixel(context: context, x: x, y: maxY, width: width, height: height))
+        samples.append(readPixel(context: context, x: x, y: minY, width: width, height: height))
     }
-    for y in stride(from: sMinY, to: sMaxY, by: stepY) {
-        samples.append(samplePixelColor(context: context, x: sMinX, y: y, width: width, height: height))
-        samples.append(samplePixelColor(context: context, x: sMaxX, y: y, width: width, height: height))
+    for y in stride(from: minY, through: maxY, by: stepY) {
+        samples.append(readPixel(context: context, x: minX, y: y, width: width, height: height))
+        samples.append(readPixel(context: context, x: maxX, y: y, width: width, height: height))
     }
 
     if samples.isEmpty {
-        return NSColor(srgbRed: 0.18, green: 0.18, blue: 0.18, alpha: 1.0)
+        return RGBAPixel(r: 0.15, g: 0.15, b: 0.16, a: 1.0)
     }
 
-    var maxClusterCount = 0
-    var dominantColor = samples[0]
+    var bestCluster: [RGBAPixel] = []
+    for s1 in samples {
+        let cluster = samples.filter { s1.distance(to: $0) < 0.06 }
+        if cluster.count > bestCluster.count {
+            bestCluster = cluster
+        }
+    }
+    let chosen = bestCluster.isEmpty ? samples : bestCluster
+    let count = CGFloat(chosen.count)
+    return RGBAPixel(
+        r: chosen.reduce(0) { $0 + $1.r } / count,
+        g: chosen.reduce(0) { $0 + $1.g } / count,
+        b: chosen.reduce(0) { $0 + $1.b } / count,
+        a: 1.0
+    )
+}
 
-    for c1 in samples {
-        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
-        c1.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
-        var count = 0
-        for c2 in samples {
-            var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
-            c2.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
-            let dist = abs(r1 - r2) + abs(g1 - g2) + abs(b1 - b2)
-            if dist < 0.20 {
-                count += 1
+struct InkMetrics {
+    let bgPixel: RGBAPixel
+    let fgPixel: RGBAPixel
+    let inkMinX: CGFloat
+    let inkMaxX: CGFloat
+    let inkMinY: CGFloat
+    let inkMaxY: CGFloat
+    let inkCoverage: CGFloat
+}
+
+func measureInkMetrics(context: CGContext, rect: CGRect, width: Int, height: Int) -> InkMetrics {
+    let bg = sampleBackgroundPixel(context: context, rect: rect, width: width, height: height)
+    let minX = max(0, min(width - 1, Int(floor(rect.minX))))
+    let maxX = max(0, min(width - 1, Int(ceil(rect.maxX))))
+    let minY = max(0, min(height - 1, Int(floor(rect.minY))))
+    let maxY = max(0, min(height - 1, Int(ceil(rect.maxY))))
+
+    var maxDist: CGFloat = 0
+    for y in minY...maxY {
+        for x in minX...maxX {
+            let p = readPixel(context: context, x: x, y: y, width: width, height: height)
+            let d = p.distance(to: bg)
+            if d > maxDist {
+                maxDist = d
             }
         }
-        if count > maxClusterCount {
-            maxClusterCount = count
-            dominantColor = c1
+    }
+
+    let inkThreshold = max(0.12, maxDist * 0.38)
+    let coreInkThreshold = max(0.18, maxDist * 0.68)
+
+    var iMinX = maxX
+    var iMaxX = minX
+    var iMinY = maxY
+    var iMaxY = minY
+    var inkCount = 0
+    var corePixels: [RGBAPixel] = []
+
+    for y in minY...maxY {
+        for x in minX...maxX {
+            let p = readPixel(context: context, x: x, y: y, width: width, height: height)
+            let d = p.distance(to: bg)
+            if d >= inkThreshold {
+                if x < iMinX { iMinX = x }
+                if x > iMaxX { iMaxX = x }
+                if y < iMinY { iMinY = y }
+                if y > iMaxY { iMaxY = y }
+                inkCount += 1
+                if d >= coreInkThreshold {
+                    corePixels.append(p)
+                }
+            }
         }
     }
 
-    return dominantColor
+    if inkCount == 0 {
+        let fallbackFg = (bg.r + bg.g + bg.b) / 3.0 > 0.55
+            ? RGBAPixel(r: 0.1, g: 0.1, b: 0.1, a: 1.0)
+            : RGBAPixel(r: 0.92, g: 0.92, b: 0.94, a: 1.0)
+        return InkMetrics(
+            bgPixel: bg,
+            fgPixel: fallbackFg,
+            inkMinX: rect.minX,
+            inkMaxX: rect.maxX,
+            inkMinY: rect.minY,
+            inkMaxY: rect.maxY,
+            inkCoverage: 0.15
+        )
+    }
+
+    let sortedR = corePixels.map { $0.r }.sorted()
+    let sortedG = corePixels.map { $0.g }.sorted()
+    let sortedB = corePixels.map { $0.b }.sorted()
+    let fg: RGBAPixel
+    if !sortedR.isEmpty {
+        let mid = sortedR.count / 2
+        fg = RGBAPixel(r: sortedR[mid], g: sortedG[mid], b: sortedB[mid], a: 1.0)
+    } else {
+        fg = (bg.r + bg.g + bg.b) / 3.0 > 0.55
+            ? RGBAPixel(r: 0.1, g: 0.1, b: 0.1, a: 1.0)
+            : RGBAPixel(r: 0.92, g: 0.92, b: 0.94, a: 1.0)
+    }
+
+    let area = max(1.0, CGFloat(( iMaxX - iMinX + 1 ) * ( iMaxY - iMinY + 1 )))
+    return InkMetrics(
+        bgPixel: bg,
+        fgPixel: fg,
+        inkMinX: CGFloat(iMinX),
+        inkMaxX: CGFloat(iMaxX),
+        inkMinY: CGFloat(iMinY),
+        inkMaxY: CGFloat(iMaxY),
+        inkCoverage: CGFloat(inkCount) / area
+    )
 }
 
-enum LayoutCategory {
-    case headerTitle
-    case headerSubtitle
-    case listPrimary
-    case listSecondary
-    case detailLabel
+func isTokenBoundaryChar(_ ch: Character) -> Bool {
+    return !(ch.isLetter || ch.isNumber || ch == "-" || ch == "_")
 }
 
-struct MatchRegion {
-    let original: String
-    let replacement: String
-    let type: String
-    let rect: CGRect
-    let lineY: CGFloat
-    let lineH: CGFloat
-    let bgColor: NSColor
-    let category: LayoutCategory
+func hasDescenders(_ s: String) -> Bool {
+    let descenderSet: Set<Character> = ["g", "j", "p", "q", "y", "(", ")", "[", "]", "{", "}", ",", ";"]
+    return s.contains { descenderSet.contains($0) }
+}
+
+struct ObservationEdit {
+    let originalText: String
+    let replacedText: String
+    let obsRect: CGRect
+    var metrics: InkMetrics
+    var pointSize: CGFloat
+    var fontWeight: NSFont.Weight
+    var isMonospaced: Bool
+    var snappedMinX: CGFloat
 }
 
 let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
 let request = VNRecognizeTextRequest { request, error in
     guard let observations = request.results as? [VNRecognizedTextObservation] else { return }
 
-    var rawMatches: [(target: TargetItem, rect: CGRect, lineY: CGFloat, lineH: CGFloat, isStandaloneTitle: Bool)] = []
+    var edits: [ObservationEdit] = []
 
     for obs in observations {
         guard let topCandidate = obs.topCandidates(1).first else { continue }
-        let text = topCandidate.string
+        let originalText = topCandidate.string
 
-        let lineY = obs.boundingBox.origin.y * CGFloat(height)
-        let lineH = obs.boundingBox.height * CGFloat(height)
+        // Find all non-overlapping matches of targets within originalText (targets are already sorted longest-first)
+        var matchedRanges: [(range: Range<String.Index>, target: TargetItem)] = []
 
         for t in targets {
-            var searchRange = text.startIndex..<text.endIndex
-            while let range = text.range(of: t.original, options: [], range: searchRange) {
-                if range.upperBound < text.endIndex {
-                    let nextChar = text[range.upperBound]
-                    if nextChar.isNumber || nextChar.isLetter {
-                        searchRange = range.upperBound..<text.endIndex
+            var searchStart = originalText.startIndex
+            while searchStart < originalText.endIndex,
+                  let range = originalText.range(of: t.original, options: [.caseInsensitive], range: searchStart..<originalText.endIndex) {
+                defer { searchStart = range.upperBound }
+
+                // Check token boundaries so a shorter hostname doesn't split a longer hostname or word
+                if range.lowerBound > originalText.startIndex {
+                    let prev = originalText[originalText.index(before: range.lowerBound)]
+                    if !isTokenBoundaryChar(prev) {
                         continue
                     }
                 }
-                if range.lowerBound > text.startIndex {
-                    let prevChar = text[text.index(before: range.lowerBound)]
-                    if prevChar.isNumber || prevChar.isLetter {
-                        searchRange = range.upperBound..<text.endIndex
+                if range.upperBound < originalText.endIndex {
+                    let next = originalText[range.upperBound]
+                    if !isTokenBoundaryChar(next) {
                         continue
                     }
                 }
 
-                defer { searchRange = range.upperBound..<text.endIndex }
-                guard let box = try? topCandidate.boundingBox(for: range) else { continue }
-
-                let x = box.boundingBox.origin.x * CGFloat(width)
-                let w = box.boundingBox.width * CGFloat(width)
-                let r = CGRect(x: x, y: lineY, width: w, height: lineH)
-
-                let isPrecededByDescription = text.lowercased().contains("discovered at")
-                let isStandaloneTitle = !isPrecededByDescription
-
-                let isDuplicate = rawMatches.contains { existing in
-                    let dx = abs(existing.rect.midX - r.midX)
-                    let dy = abs(existing.rect.midY - r.midY)
-                    return dx < 15.0 && dy < 6.0
+                // Ensure no overlap with an already claimed longer match
+                let overlaps = matchedRanges.contains { existing in
+                    existing.range.overlaps(range)
                 }
-                if isDuplicate { continue }
-                rawMatches.append((target: t, rect: r, lineY: lineY, lineH: lineH, isStandaloneTitle: isStandaloneTitle))
+                if !overlaps {
+                    matchedRanges.append((range: range, target: t))
+                }
             }
         }
-    }
 
-    rawMatches.sort { $0.rect.minY > $1.rect.minY }
-
-    var matchRegions: [MatchRegion] = []
-
-    for m in rawMatches {
-        let r = m.rect
-        let t = m.target
-        let xRatio = r.minX / CGFloat(width)
-        let yRatio = r.minY / CGFloat(height)
-
-        // Precision layout classification: Line 1 (Primary Title) vs Line 2 (Secondary Subtitle)
-        let isIPOrDetail = t.type == "ipv4" || t.type == "mac" || t.type == "token" || t.original.contains("192.168") || t.original.contains("10.0.")
-
-        let hasDetailLineBelow = rawMatches.contains { other in
-            let dy = m.rect.minY - other.rect.minY
-            let dx = abs(m.rect.minX - other.rect.minX)
-            let otherIsIP = other.target.type == "ipv4" || other.target.type == "mac" || other.target.type == "token" || other.target.original.contains("192.168") || other.target.original.contains("10.0.")
-            return dy > 18.0 && dy < 45.0 && dx < 60.0 && otherIsIP
+        if matchedRanges.isEmpty {
+            continue
         }
 
-        // Check if target is inline inside a sentence (preceded horizontally on the same line)
-        let isInlineInSentence = rawMatches.contains { other in
-            let dy = abs(m.rect.minY - other.rect.minY)
-            let dx = m.rect.minX - other.rect.minX
-            return dy < 10.0 && dx > 20.0
-        } || r.minX > 220.0
+        // Sort matched ranges in forward string order and assemble the complete anonymized observation string
+        matchedRanges.sort { $0.range.lowerBound < $1.range.lowerBound }
 
-        let isBelowTitleLine = rawMatches.contains { other in
-            let dy = other.rect.minY - m.rect.minY
-            let otherIsTitle = other.target.type == "hostname" || (other.isStandaloneTitle && !other.target.original.contains("192.168") && !other.target.original.contains("10.0."))
-            return dy > 18.0 && dy < 45.0 && otherIsTitle
+        var replacedText = ""
+        var cursor = originalText.startIndex
+        for m in matchedRanges {
+            replacedText += String(originalText[cursor..<m.range.lowerBound])
+            replacedText += m.target.replacement
+            cursor = m.range.upperBound
+        }
+        replacedText += String(originalText[cursor..<originalText.endIndex])
+
+        let obsRect = CGRect(
+            x: obs.boundingBox.origin.x * CGFloat(width),
+            y: obs.boundingBox.origin.y * CGFloat(height),
+            width: obs.boundingBox.width * CGFloat(width),
+            height: obs.boundingBox.height * CGFloat(height)
+        )
+
+        let metrics = measureInkMetrics(context: context, rect: obsRect, width: width, height: height)
+        let inkHeight = max(8.0, metrics.inkMaxY - metrics.inkMinY + 1.0)
+        let inkWidth = max(8.0, metrics.inkMaxX - metrics.inkMinX + 1.0)
+
+        // Compute exact point size from measured glyph ink height
+        // Reference SF Pro capHeight ratio is ~0.705; with descenders total ink height ratio is ~0.91
+        let heightRatio: CGFloat = hasDescenders(originalText) ? 0.89 : 0.715
+        let estimatedPointSize = max(10.0, min(44.0, inkHeight / heightRatio))
+
+        // Determine best matching font family & weight by comparing rendered width of originalText against measured inkWidth
+        let candidateSpecs: [(mono: Bool, weight: NSFont.Weight)] = [
+            (false, .regular),
+            (false, .medium),
+            (false, .semibold),
+            (false, .bold),
+            (true, .regular),
+            (true, .medium)
+        ]
+
+        let onlyTechnicalToken = matchedRanges.count == 1 &&
+            matchedRanges[0].range == (originalText.startIndex..<originalText.endIndex) &&
+            (matchedRanges[0].target.type == "mac" || matchedRanges[0].target.type == "token")
+
+        var bestSpec = (mono: onlyTechnicalToken, weight: NSFont.Weight.regular)
+        var bestScore = CGFloat.greatestFiniteMagnitude
+
+        for spec in candidateSpecs {
+            if spec.mono && !onlyTechnicalToken {
+                continue
+            }
+            let testFont = spec.mono
+                ? NSFont.monospacedSystemFont(ofSize: estimatedPointSize, weight: spec.weight)
+                : NSFont.systemFont(ofSize: estimatedPointSize, weight: spec.weight)
+            let attr = NSAttributedString(string: originalText, attributes: [.font: testFont])
+            let w = attr.size().width
+            let widthError = abs(w - inkWidth) / max(1.0, inkWidth)
+
+            // Prefer semibold/bold when inkCoverage is higher or when width matches closely
+            var weightPenalty: CGFloat = 0.0
+            if metrics.inkCoverage > 0.24 && (spec.weight == .regular) {
+                weightPenalty = 0.04
+            } else if metrics.inkCoverage < 0.19 && (spec.weight == .bold) {
+                weightPenalty = 0.05
+            }
+
+            let score = widthError + weightPenalty
+            if score < bestScore {
+                bestScore = score
+                bestSpec = spec
+            }
         }
 
-        var category: LayoutCategory = .listPrimary
-        if xRatio > 0.45 && yRatio > 0.80 {
-            category = .headerTitle
-        } else if isBelowTitleLine || isInlineInSentence || (isIPOrDetail && !hasDetailLineBelow) {
-            category = .listSecondary
-        } else {
-            category = .listPrimary
+        edits.append(ObservationEdit(
+            originalText: originalText,
+            replacedText: replacedText,
+            obsRect: obsRect,
+            metrics: metrics,
+            pointSize: estimatedPointSize,
+            fontWeight: bestSpec.weight,
+            isMonospaced: bestSpec.mono,
+            snappedMinX: metrics.inkMinX
+        ))
+    }
+
+    // Align left X and pointSize across vertically aligned rows in the same column
+    for i in 0..<edits.count {
+        var colX: [CGFloat] = [edits[i].metrics.inkMinX]
+        var colSizes: [CGFloat] = [edits[i].pointSize]
+        for j in 0..<edits.count where i != j {
+            if abs(edits[i].metrics.inkMinX - edits[j].metrics.inkMinX) <= 8.0 {
+                colX.append(edits[j].metrics.inkMinX)
+                if abs(edits[i].pointSize - edits[j].pointSize) <= 2.5 {
+                    colSizes.append(edits[j].pointSize)
+                }
+            }
         }
-
-        let bg = sampleBackgroundColor(context: context, rect: r, width: width, height: height)
-        matchRegions.append(MatchRegion(original: t.original, replacement: t.replacement, type: t.type, rect: r, lineY: m.lineY, lineH: m.lineH, bgColor: bg, category: category))
-    }
-
-    // CLUSTER UNIFICATION: Compute median line heights and unified main list left X-margin
-    // This guarantees that all list items (e.g. device names) get identical font sizes and align vertically
-    var categoryLineHeights: [LayoutCategory: [CGFloat]] = [:]
-    var allListLeftX: [CGFloat] = []
-
-    for m in matchRegions {
-        categoryLineHeights[m.category, default: []].append(m.lineH)
-        if m.category == .listPrimary {
-            allListLeftX.append(m.rect.minX)
-        }
-    }
-
-    var medianLineHeights: [LayoutCategory: CGFloat] = [:]
-    var unifiedListX: CGFloat? = nil
-
-    for (cat, heights) in categoryLineHeights {
-        let sortedH = heights.sorted()
-        let midH = sortedH.count / 2
-        medianLineHeights[cat] = sortedH.count %% 2 == 0 ? (sortedH[midH - 1] + sortedH[midH]) / 2.0 : sortedH[midH]
-    }
-    if !allListLeftX.isEmpty {
-        let sortedX = allListLeftX.sorted()
-        let midX = sortedX.count / 2
-        unifiedListX = sortedX.count %% 2 == 0 ? (sortedX[midX - 1] + sortedX[midX]) / 2.0 : sortedX[midX]
+        colX.sort()
+        edits[i].snappedMinX = colX[colX.count / 2]
+        colSizes.sort()
+        edits[i].pointSize = colSizes[colSizes.count / 2]
     }
 
     NSGraphicsContext.saveGraphicsState()
     let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
     NSGraphicsContext.current = nsContext
 
-    // PASS 1: Cleanly erase original target bounding boxes with +4px padding
-    for region in matchRegions {
-        region.bgColor.setFill()
-        let eraseRect = CGRect(x: region.rect.minX - 2, y: region.lineY - 2, width: region.rect.width + 4, height: region.lineH + 4)
+    // PASS 1: Erase the full observation ink/bounding box cleanly with sampled background color
+    for edit in edits {
+        edit.metrics.bgPixel.nsColor.setFill()
+        let eraseMinX = min(edit.obsRect.minX, edit.metrics.inkMinX) - 2.0
+        let eraseMaxX = max(edit.obsRect.maxX, edit.metrics.inkMaxX) + 3.0
+        let eraseMinY = min(edit.obsRect.minY, edit.metrics.inkMinY) - 2.0
+        let eraseMaxY = max(edit.obsRect.maxY, edit.metrics.inkMaxY) + 2.0
+        let eraseRect = CGRect(
+            x: eraseMinX,
+            y: eraseMinY,
+            width: eraseMaxX - eraseMinX,
+            height: eraseMaxY - eraseMinY
+        )
         NSBezierPath.fill(eraseRect)
 
         if mode == "blur" {
             NSColor.gray.withAlphaComponent(0.8).setFill()
-            NSBezierPath.fill(region.rect)
+            NSBezierPath.fill(edit.obsRect)
         } else if mode == "pill" {
             NSColor.darkGray.setFill()
-            NSBezierPath.fill(region.rect)
+            NSBezierPath.fill(edit.obsRect)
         }
     }
 
-    // PASS 2: Render synthetic replacement text using EXACT UNIFORM TYPOGRAPHY & VERTICAL ALIGNMENT
+    // PASS 2: Draw the complete anonymized observation line on the exact original typographic baseline using CoreText
     if mode == "synthetic" {
-        for region in matchRegions {
-            let r = region.rect
-            var bgR: CGFloat = 0, bgG: CGFloat = 0, bgB: CGFloat = 0, bgA: CGFloat = 0
-            region.bgColor.getRed(&bgR, green: &bgG, blue: &bgB, alpha: &bgA)
-            let bgBrightness = (bgR * 0.299 + bgG * 0.587 + bgB * 0.114)
-            let isBlueBg = (bgR < 0.15 && bgB > 0.55)
-
-            var baseFontSize: CGFloat = 14.0
-            var fontWeight: NSFont.Weight = .semibold
-            var textColor: NSColor = .white
-
-            switch region.category {
-            case .headerTitle:
-                baseFontSize = 18.0
-                fontWeight = .bold
-                textColor = .white
-            case .headerSubtitle:
-                baseFontSize = 13.0
-                fontWeight = .regular
-                textColor = NSColor(srgbRed: 0.68, green: 0.68, blue: 0.72, alpha: 1.0)
-            case .listPrimary:
-                baseFontSize = 14.0
-                fontWeight = .semibold
-                textColor = bgBrightness > 0.6 ? .black : .white
-            case .listSecondary:
-                baseFontSize = 13.0
-                fontWeight = .regular
-                textColor = isBlueBg ? .white : (bgBrightness > 0.6 ? NSColor(srgbRed: 0.35, green: 0.35, blue: 0.37, alpha: 1.0) : NSColor(srgbRed: 0.68, green: 0.68, blue: 0.72, alpha: 1.0))
-            case .detailLabel:
-                baseFontSize = 12.0
-                fontWeight = .medium
-                textColor = bgBrightness > 0.6 ? .black : NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1.0)
-            }
-
-            let isMonospaced = region.type == "ipv4" || region.type == "mac" || region.type == "token"
-
-            // Font scaling: monospaced SF Mono uses 0.82 multiplier to avoid pill collisions; proportional SF Pro uses 1.10 (primary) / 1.02 (secondary) to match full original text size
-            var fontScaleMultiplier: CGFloat = 1.10
-            if isMonospaced {
-                fontScaleMultiplier = 0.82
-            } else if region.category == .listSecondary {
-                fontScaleMultiplier = 1.02
-            } else if region.category == .headerTitle {
-                fontScaleMultiplier = 1.12
-            }
-
-            let effectiveLineH = medianLineHeights[region.category] ?? region.lineH
-            let fontSizeFromLineH = effectiveLineH * fontScaleMultiplier
-            let scaledFontSize = max(11.0, fontSizeFromLineH)
-
-            // Snap left X position to unified main list column margin if within 40px (guarantees perfect vertical bullet alignment across all items)
-            var drawX = r.minX
-            if (region.category == .listPrimary || region.category == .listSecondary),
-               let targetX = unifiedListX, abs(r.minX - targetX) < 40.0 {
-                drawX = targetX
-            }
-
-            // Font selection: monospaced SF Mono for IPs/MACs/tokens; proportional SF Pro for UI names/labels
-            var font: NSFont
-            if isMonospaced {
-                font = NSFont.monospacedSystemFont(ofSize: scaledFontSize, weight: fontWeight)
-            } else {
-                font = NSFont.systemFont(ofSize: scaledFontSize, weight: fontWeight)
-            }
-
-            // Measure unkerned width
-            let unkernedAttr = NSAttributedString(string: region.replacement, attributes: [.font: font])
-            let naturalWidth = unkernedAttr.size().width
-            let targetWidth = region.rect.width
-
-            // Compute subtle letter-spacing (kern) clamped to [-0.8pt, +0.8pt] to match original bounding box length exactly
-            var kernValue: CGFloat = 0.0
-            if region.replacement.count > 1 && abs(targetWidth - naturalWidth) > 0.5 {
-                let charCount = CGFloat(region.replacement.count - 1)
-                let diff = targetWidth - naturalWidth
-                let calcKern = diff / charCount
-                kernValue = max(-0.8, min(0.8, calcKern))
-            }
+        for edit in edits {
+            let font: NSFont = edit.isMonospaced
+                ? NSFont.monospacedSystemFont(ofSize: edit.pointSize, weight: edit.fontWeight)
+                : NSFont.systemFont(ofSize: edit.pointSize, weight: edit.fontWeight)
 
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: font,
-                .foregroundColor: textColor,
-                .kern: kernValue as NSNumber
+                .foregroundColor: edit.metrics.fgPixel.nsColor
             ]
-            let attrStr = NSAttributedString(string: region.replacement, attributes: attributes)
-            let strSize = attrStr.size()
+            let attrStr = NSAttributedString(string: edit.replacedText, attributes: attributes)
+            let ctLine = CTLineCreateWithAttributedString(attrStr)
 
-            // Exact font baseline alignment in pixel space with snapped X column margin
-            var textY = region.lineY + (region.lineH - strSize.height) / 2.0
-            if region.category == .listSecondary {
-                textY += 2.5
+            // Calculate exact baseline Y from the top of the measured ink capHeight
+            let baselineY: CGFloat
+            if hasDescenders(edit.originalText) {
+                baselineY = edit.metrics.inkMaxY - font.capHeight
+            } else {
+                baselineY = edit.metrics.inkMinY
             }
-            let drawPoint = CGPoint(x: drawX, y: textY)
-            attrStr.draw(at: drawPoint)
+
+            context.saveGState()
+            context.textMatrix = .identity
+            context.textPosition = CGPoint(x: edit.snappedMinX, y: baselineY)
+            CTLineDraw(ctLine, context)
+            context.restoreGState()
         }
     }
 
